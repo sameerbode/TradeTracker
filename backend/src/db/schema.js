@@ -40,22 +40,32 @@ CREATE TABLE IF NOT EXISTS imports (
     FOREIGN KEY (account_id) REFERENCES accounts(id)
 );
 
--- Custom strategy groupings
-CREATE TABLE IF NOT EXISTS strategies (
+-- Unified positions (replaces strategies table)
+CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
+    name TEXT,
     notes TEXT,
+    why TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Links trades to strategies (many-to-many)
-CREATE TABLE IF NOT EXISTS strategy_trades (
+-- Links trades to positions (one position per trade)
+CREATE TABLE IF NOT EXISTS position_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    strategy_id INTEGER NOT NULL,
+    position_id INTEGER NOT NULL,
     trade_id INTEGER NOT NULL,
-    FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE,
+    FOREIGN KEY (position_id) REFERENCES positions(id) ON DELETE CASCADE,
     FOREIGN KEY (trade_id) REFERENCES trades(id) ON DELETE CASCADE,
-    UNIQUE(strategy_id, trade_id)
+    UNIQUE(trade_id)
+);
+
+-- Custom "why" options for positions
+CREATE TABLE IF NOT EXISTS why_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL UNIQUE,
+    note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for common queries
@@ -63,6 +73,6 @@ CREATE INDEX IF NOT EXISTS idx_trades_account ON trades(account_id);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_executed_at ON trades(executed_at);
 CREATE INDEX IF NOT EXISTS idx_trades_asset_type ON trades(asset_type);
-CREATE INDEX IF NOT EXISTS idx_strategy_trades_strategy ON strategy_trades(strategy_id);
-CREATE INDEX IF NOT EXISTS idx_strategy_trades_trade ON strategy_trades(trade_id);
+CREATE INDEX IF NOT EXISTS idx_position_trades_position ON position_trades(position_id);
+CREATE INDEX IF NOT EXISTS idx_position_trades_trade ON position_trades(trade_id);
 `;

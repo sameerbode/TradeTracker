@@ -27,8 +27,6 @@ export default function ImportButton() {
         queryClient.invalidateQueries({ queryKey: ['trades'] });
         queryClient.invalidateQueries({ queryKey: ['stats'] });
         queryClient.invalidateQueries({ queryKey: ['symbols'] });
-        queryClient.invalidateQueries({ queryKey: ['strategies'] });
-        queryClient.invalidateQueries({ queryKey: ['groupedTradeIds'] });
         queryClient.invalidateQueries({ queryKey: ['positions'] });
     };
 
@@ -177,7 +175,7 @@ export default function ImportButton() {
                                 <>Backup downloaded</>
                             ) : result.restored ? (
                                 <>
-                                    {result.filename}: Restored {result.restored.accounts} accounts, {result.restored.trades} trades, {result.restored.strategies} strategies
+                                    {result.filename}: Restored {result.restored.accounts} accounts, {result.restored.trades} trades, {result.restored.positions || result.restored.strategies || 0} positions
                                 </>
                             ) : (
                                 <>

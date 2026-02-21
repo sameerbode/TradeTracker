@@ -1,6 +1,7 @@
 import { getDb, withTransaction } from '../db/database.js';
 import { getOrCreateAccount } from './accountService.js';
 import { insertTrades } from './tradeService.js';
+import { recomputePositionsAfterImport, computeRoundTrips } from './positionService.js';
 import {
     parseRobinhoodCsv,
     isRobinhoodCsv,
@@ -45,6 +46,14 @@ export async function importCsv(filename, content) {
     // Update import record with actual counts
     updateImportCounts(importId, imported, skipped);
 
+    // Compute positions for newly imported trades
+    if (imported > 0) {
+        const db = getDb();
+        const importedTradeIds = db.prepare('SELECT id FROM trades WHERE import_id = ?')
+            .all(importId).map(r => r.id);
+        recomputePositionsAfterImport(importedTradeIds);
+    }
+
     return {
         broker,
         account_id: account.id,
@@ -78,6 +87,14 @@ export async function importPdf(filename, buffer) {
     // Update import record with actual counts
     updateImportCounts(importId, imported, skipped);
 
+    // Compute positions for newly imported trades
+    if (imported > 0) {
+        const db = getDb();
+        const importedTradeIds = db.prepare('SELECT id FROM trades WHERE import_id = ?')
+            .all(importId).map(r => r.id);
+        recomputePositionsAfterImport(importedTradeIds);
+    }
+
     return {
         broker: 'robinhood',
         account_id: account.id,
@@ -104,10 +121,26 @@ export function deleteImport(importId) {
         // Get trade IDs for this import
         const tradeIds = db.prepare('SELECT id FROM trades WHERE import_id = ?').all(importId).map(r => r.id);
 
-        // Clean up strategy_trades references
+        // Clean up position_trades references and empty positions
         if (tradeIds.length > 0) {
             const placeholders = tradeIds.map(() => '?').join(',');
-            db.prepare(`DELETE FROM strategy_trades WHERE trade_id IN (${placeholders})`).run(...tradeIds);
+
+            // Find affected position IDs
+            const affectedPositionIds = db.prepare(`
+                SELECT DISTINCT position_id FROM position_trades
+                WHERE trade_id IN (${placeholders})
+            `).all(...tradeIds).map(r => r.position_id);
+
+            // Remove trade links
+            db.prepare(`DELETE FROM position_trades WHERE trade_id IN (${placeholders})`).run(...tradeIds);
+
+            // Delete positions that now have no trades
+            for (const posId of affectedPositionIds) {
+                const remaining = db.prepare('SELECT COUNT(*) as cnt FROM position_trades WHERE position_id = ?').get(posId).cnt;
+                if (remaining === 0) {
+                    db.prepare('DELETE FROM positions WHERE id = ?').run(posId);
+                }
+            }
         }
 
         // Delete trades
@@ -143,17 +176,19 @@ export function exportAllData() {
 
     const accounts = db.prepare('SELECT * FROM accounts').all();
     const trades = db.prepare('SELECT * FROM trades').all();
-    const strategies = db.prepare('SELECT * FROM strategies').all();
-    const strategyTrades = db.prepare('SELECT * FROM strategy_trades').all();
+    const positions = db.prepare('SELECT * FROM positions').all();
+    const positionTrades = db.prepare('SELECT * FROM position_trades').all();
+    const whyOptions = db.prepare('SELECT * FROM why_options').all();
 
     return {
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         data: {
             accounts,
             trades,
-            strategies,
-            strategyTrades
+            positions,
+            positionTrades,
+            whyOptions,
         }
     };
 }
@@ -166,19 +201,20 @@ export function importBackup(backup) {
         throw new Error('Invalid backup format');
     }
 
-    const { accounts, trades, strategies, strategyTrades } = backup.data;
+    const version = backup.version;
 
-    // Use a transaction to ensure atomicity
     return withTransaction(db, () => {
         // Clear existing data in reverse dependency order
-        db.prepare('DELETE FROM strategy_trades').run();
-        db.prepare('DELETE FROM strategies').run();
+        db.prepare('DELETE FROM position_trades').run();
+        db.prepare('DELETE FROM positions').run();
         db.prepare('DELETE FROM imports').run();
         db.prepare('DELETE FROM trades').run();
         db.prepare('DELETE FROM accounts').run();
 
         // Reset auto-increment counters
-        db.prepare("DELETE FROM sqlite_sequence WHERE name IN ('accounts', 'trades', 'strategies', 'strategy_trades', 'imports')").run();
+        db.prepare("DELETE FROM sqlite_sequence WHERE name IN ('accounts', 'trades', 'positions', 'position_trades', 'imports')").run();
+
+        const { accounts, trades } = backup.data;
 
         // Insert accounts
         const insertAccount = db.prepare(`
@@ -203,29 +239,105 @@ export function importBackup(backup) {
             );
         }
 
-        // Insert strategies
-        const insertStrategy = db.prepare(`
-            INSERT INTO strategies (id, name, notes, created_at)
-            VALUES (?, ?, ?, ?)
-        `);
-        for (const strategy of strategies) {
-            insertStrategy.run(strategy.id, strategy.name, strategy.notes, strategy.created_at);
-        }
+        if (version >= 2) {
+            // Version 2: positions + position_trades
+            const { positions, positionTrades, whyOptions } = backup.data;
 
-        // Insert strategy_trades
-        const insertStrategyTrade = db.prepare(`
-            INSERT INTO strategy_trades (strategy_id, trade_id)
-            VALUES (?, ?)
-        `);
-        for (const st of strategyTrades) {
-            insertStrategyTrade.run(st.strategy_id, st.trade_id);
-        }
+            const insertPosition = db.prepare(`
+                INSERT INTO positions (id, name, notes, why, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `);
+            for (const pos of (positions || [])) {
+                insertPosition.run(pos.id, pos.name, pos.notes, pos.why, pos.status, pos.created_at);
+            }
 
-        return {
-            accounts: accounts.length,
-            trades: trades.length,
-            strategies: strategies.length,
-            strategyTrades: strategyTrades.length
-        };
+            const insertPT = db.prepare(`
+                INSERT INTO position_trades (position_id, trade_id)
+                VALUES (?, ?)
+            `);
+            for (const pt of (positionTrades || [])) {
+                insertPT.run(pt.position_id, pt.trade_id);
+            }
+
+            // Restore why_options if present
+            if (whyOptions && whyOptions.length > 0) {
+                db.prepare('DELETE FROM why_options').run();
+                const insertWhy = db.prepare(`
+                    INSERT INTO why_options (id, label, note, created_at)
+                    VALUES (?, ?, ?, ?)
+                `);
+                for (const wo of whyOptions) {
+                    insertWhy.run(wo.id, wo.label, wo.note, wo.created_at);
+                }
+            }
+
+            return {
+                accounts: accounts.length,
+                trades: trades.length,
+                positions: (positions || []).length,
+                positionTrades: (positionTrades || []).length,
+            };
+        } else {
+            // Version 1: old format with strategies + strategyTrades
+            // Migrate on import
+            const { strategies, strategyTrades } = backup.data;
+
+            // Import strategies as positions
+            const insertPosition = db.prepare(`
+                INSERT INTO positions (id, name, notes, why, status, created_at)
+                VALUES (?, ?, ?, ?, 'open', ?)
+            `);
+            for (const strategy of (strategies || [])) {
+                insertPosition.run(strategy.id, strategy.name, strategy.notes, strategy.why || null, strategy.created_at);
+            }
+
+            // Import strategy_trades as position_trades
+            const insertPT = db.prepare(`
+                INSERT OR IGNORE INTO position_trades (position_id, trade_id)
+                VALUES (?, ?)
+            `);
+            for (const st of (strategyTrades || [])) {
+                insertPT.run(st.strategy_id, st.trade_id);
+            }
+
+            // Compute round trips for unclaimed trades
+            const claimedIds = new Set((strategyTrades || []).map(st => st.trade_id));
+            const unclaimedTrades = trades.filter(t => !claimedIds.has(t.id));
+
+            if (unclaimedTrades.length > 0) {
+                // Sort trades for round-trip computation
+                unclaimedTrades.sort((a, b) => {
+                    const dateCompare = new Date(a.executed_at) - new Date(b.executed_at);
+                    if (dateCompare !== 0) return dateCompare;
+                    return a.side === 'buy' ? -1 : 1;
+                });
+
+                const roundTrips = computeRoundTrips(unclaimedTrades);
+
+                const insertPos = db.prepare(`
+                    INSERT INTO positions (name, status, created_at)
+                    VALUES (?, ?, datetime('now'))
+                `);
+                const insertPosTradeRow = db.prepare(`
+                    INSERT OR IGNORE INTO position_trades (position_id, trade_id)
+                    VALUES (?, ?)
+                `);
+
+                for (const rt of roundTrips) {
+                    const result = insertPos.run(null, rt.status);
+                    const posId = result.lastInsertRowid;
+                    for (const tradeId of rt.tradeIds) {
+                        insertPosTradeRow.run(posId, tradeId);
+                    }
+                }
+            }
+
+            return {
+                accounts: accounts.length,
+                trades: trades.length,
+                strategies: (strategies || []).length,
+                strategyTrades: (strategyTrades || []).length,
+            };
+        }
     });
 }

@@ -34,26 +34,6 @@ router.get('/symbols', (req, res) => {
     }
 });
 
-// GET /api/trades/positions - Get positions with P&L (FIFO matching)
-router.get('/positions', (req, res) => {
-    try {
-        const positions = tradeService.getPositions();
-        res.json(positions);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// GET /api/trades/positions/roundtrip - Get round-trip positions (balanced grouping)
-router.get('/positions/roundtrip', (req, res) => {
-    try {
-        const positions = tradeService.getRoundTripPositions();
-        res.json(positions);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // GET /api/trades/:id - Get single trade
 router.get('/:id', (req, res) => {
     try {

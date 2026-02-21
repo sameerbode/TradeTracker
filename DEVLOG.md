@@ -7,6 +7,36 @@ A personal trade tracking application that aggregates trades from multiple broke
 
 ## Changelog
 
+### 2026-02-21 - Unified Positions Table Refactor
+
+Replaced the dual-system (on-the-fly round trips + strategies table) with a single `positions` table. All positions are now first-class DB records, enabling "why" assignment to any position.
+
+**Database Changes:**
+- New `positions` table (id, name, notes, why, status, created_at)
+- New `position_trades` table (position_id, trade_id, UNIQUE(trade_id))
+- Auto-migration from `strategies`/`strategy_trades` on startup
+- Unclaimed trades computed into round-trip positions during migration
+
+**Backend Changes:**
+- `backend/src/utils/tradeUtils.js` — Shared utilities extracted from tradeService
+- `backend/src/services/positionService.js` — Full CRUD, ungroup, merge, recompute
+- `backend/src/routes/positions.js` — All position endpoints under `/api/positions`
+- `backend/src/services/importService.js` — Recomputes positions after import, v2 export format
+- Removed `strategyService.js`, `routes/strategies.js`
+- Cleaned up `tradeService.js` (removed getPositions, getRoundTripPositions)
+
+**Frontend Changes:**
+- `frontend/src/api/client.js` — All calls now use `/positions` endpoints
+- `frontend/src/components/StrategiesView.jsx` — Single `getPositions()` query, "why" works on all rows
+- `frontend/src/components/ImportButton.jsx` — Updated query invalidation
+
+**Key behavior:**
+- Purple rows = multi-leg (user-grouped or multi-symbol positions)
+- White rows = simple round trips (auto-computed)
+- "Why" dropdown works on ALL positions
+- Backup export v2 includes positions; v1 backups auto-migrate on import
+- `POST /api/positions/recompute` to force-rebuild all simple positions
+
 ### 2026-02-09 14:00 - Import History with Delete
 
 Added the ability to view import history and delete entire imports (along with their trades). This helps users undo overlapping CSV imports where deduplication may not catch everything due to `broker_trade_id` including `rowIndex`.

@@ -31,10 +31,6 @@ export const getTrades = (filters = {}) => {
 
 export const getSymbols = () => request('/trades/symbols');
 
-export const getPositions = () => request('/trades/positions');
-
-export const getRoundTripPositions = () => request('/trades/positions/roundtrip');
-
 export const deleteTrade = (id) => request(`/trades/${id}`, { method: 'DELETE' });
 
 export const clearAllTrades = () => request('/trades', { method: 'DELETE' });
@@ -145,40 +141,63 @@ export const importBackup = async (file) => {
     return response.json();
 };
 
-// Strategies
-export const getStrategies = () => request('/strategies');
+// Positions (unified - replaces old strategies + round-trip positions)
+export const getPositions = () => request('/positions');
 
-export const getGroupedTradeIds = () => request('/strategies/grouped-trades');
-
-export const createStrategy = (name, tradeIds = [], notes = '') =>
-    request('/strategies', {
+export const createPosition = (name, tradeIds = [], notes = '') =>
+    request('/positions', {
         method: 'POST',
         body: JSON.stringify({ name, tradeIds, notes }),
     });
 
-export const updateStrategy = (id, { name, notes }) =>
-    request(`/strategies/${id}`, {
+export const updatePosition = (id, { name, notes, why }) =>
+    request(`/positions/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ name, notes }),
+        body: JSON.stringify({ name, notes, why }),
     });
 
-export const deleteStrategy = (id) =>
-    request(`/strategies/${id}`, { method: 'DELETE' });
+export const deletePosition = (id) =>
+    request(`/positions/${id}`, { method: 'DELETE' });
 
-export const addTradesToStrategy = (strategyId, tradeIds) =>
-    request(`/strategies/${strategyId}/trades`, {
+export const addTradesToPosition = (positionId, tradeIds) =>
+    request(`/positions/${positionId}/trades`, {
         method: 'POST',
         body: JSON.stringify({ tradeIds }),
     });
 
-export const removeTradesFromStrategy = (strategyId, tradeIds) =>
-    request(`/strategies/${strategyId}/trades`, {
+export const removeTradesFromPosition = (positionId, tradeIds) =>
+    request(`/positions/${positionId}/trades`, {
         method: 'DELETE',
         body: JSON.stringify({ tradeIds }),
     });
 
-export const mergeStrategies = (strategyIds, name) =>
-    request('/strategies/merge', {
+export const ungroupPosition = (id) =>
+    request(`/positions/${id}/ungroup`, { method: 'POST' });
+
+export const mergePositions = (positionIds, name) =>
+    request('/positions/merge', {
         method: 'POST',
-        body: JSON.stringify({ strategyIds, name }),
+        body: JSON.stringify({ positionIds, name }),
+    });
+
+export const recomputePositions = () =>
+    request('/positions/recompute', { method: 'POST' });
+
+export const getWhyOptions = () => request('/positions/why-options');
+
+export const addWhyOption = ({ label, note }) =>
+    request('/positions/why-options', {
+        method: 'POST',
+        body: JSON.stringify({ label, note }),
+    });
+
+export const updateWhyOption = (id, { label, note }) =>
+    request(`/positions/why-options/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ label, note }),
+    });
+
+export const deleteWhyOption = (id) =>
+    request(`/positions/why-options/${id}`, {
+        method: 'DELETE',
     });

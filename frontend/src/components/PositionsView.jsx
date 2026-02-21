@@ -1,14 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, Fragment, useMemo, useCallback } from 'react';
+import { useState, Fragment, useMemo, useEffect } from 'react';
 import {
-    getRoundTripPositions,
+    getPositions,
     setTradesReview,
     expireTrades,
-    getStrategies,
-    createStrategy,
-    addTradesToStrategy,
-    deleteStrategy,
-    updateStrategy,
+    createPosition,
+    addTradesToPosition,
+    deletePosition,
+    updatePosition,
+    ungroupPosition,
+    getWhyOptions,
+    addWhyOption,
+    updateWhyOption,
+    deleteWhyOption,
+    getStats,
 } from '../api/client';
 
 /**
@@ -39,102 +44,125 @@ function formatOptionDisplay(symbol, assetType, expirationDate = null) {
     return symbol;
 }
 
-export default function StrategiesView({ filters = {} }) {
+export default function PositionsView({ filters = {} }) {
     const queryClient = useQueryClient();
     const [statusFilter, setStatusFilter] = useState('all');
     const [expandedRows, setExpandedRows] = useState(new Set());
     const [sortConfig, setSortConfig] = useState({ key: 'sellDate', direction: 'desc' });
     const [draggedItem, setDraggedItem] = useState(null);
     const [dropTarget, setDropTarget] = useState(null);
-    const [hoverBasketId, setHoverBasketId] = useState(null); // Which basket is being hovered
-    const [baskets, setBaskets] = useState([{ id: 1, name: '', items: [] }]); // Multiple baskets
+    const [hoverBasketId, setHoverBasketId] = useState(null);
+    const [baskets, setBaskets] = useState([{ id: 1, name: '', items: [] }]);
     const [nextBasketId, setNextBasketId] = useState(2);
-    const [editingStrategyId, setEditingStrategyId] = useState(null);
+    const [editingPositionId, setEditingPositionId] = useState(null);
     const [editingName, setEditingName] = useState('');
 
-    // Queries
-    const { data: positions = [], isLoading: loadingPositions } = useQuery({
-        queryKey: ['positions', 'roundtrip'],
-        queryFn: getRoundTripPositions,
+    const [tallyOpen, setTallyOpen] = useState(false);
+
+    useEffect(() => {
+        if (!tallyOpen) return;
+        const handleClick = () => setTallyOpen(false);
+        document.addEventListener('click', handleClick);
+        return () => document.removeEventListener('click', handleClick);
+    }, [tallyOpen]);
+
+    // Single query for ALL positions (both simple and multi-leg)
+    const { data: positions = [], isLoading } = useQuery({
+        queryKey: ['positions'],
+        queryFn: getPositions,
     });
 
-    const { data: strategies = [], isLoading: loadingStrategies } = useQuery({
-        queryKey: ['strategies'],
-        queryFn: getStrategies,
+    const { data: stats } = useQuery({
+        queryKey: ['stats'],
+        queryFn: getStats,
     });
 
-    // Mutations with optimistic updates
-    // Review status: 0=none, 1=reviewing, 2=reviewed
+    const invalidatePositions = () => {
+        queryClient.invalidateQueries({ queryKey: ['positions'] });
+    };
+
+    // Mutations
     const reviewMutation = useMutation({
         mutationFn: ({ tradeIds, status }) => setTradesReview(tradeIds, status),
         onMutate: async ({ tradeIds, status }) => {
-            await queryClient.cancelQueries({ queryKey: ['positions', 'roundtrip'] });
-            await queryClient.cancelQueries({ queryKey: ['strategies'] });
-            const prevPositions = queryClient.getQueryData(['positions', 'roundtrip']);
-            const prevStrategies = queryClient.getQueryData(['strategies']);
+            await queryClient.cancelQueries({ queryKey: ['positions'] });
+            const prev = queryClient.getQueryData(['positions']);
             const tradeIdSet = new Set(tradeIds);
-            queryClient.setQueryData(['positions', 'roundtrip'], old =>
+            queryClient.setQueryData(['positions'], old =>
                 old?.map(p => p.tradeIds?.some(id => tradeIdSet.has(id)) ? { ...p, reviewStatus: status } : p)
             );
-            queryClient.setQueryData(['strategies'], old =>
-                old?.map(s => s.tradeIds?.some(id => tradeIdSet.has(id)) ? { ...s, reviewStatus: status } : s)
-            );
-            return { prevPositions, prevStrategies };
+            return { prev };
         },
         onError: (_err, _vars, context) => {
-            queryClient.setQueryData(['positions', 'roundtrip'], context.prevPositions);
-            queryClient.setQueryData(['strategies'], context.prevStrategies);
+            queryClient.setQueryData(['positions'], context.prev);
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['positions'] });
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
-        },
+        onSettled: invalidatePositions,
     });
 
     const expireMutation = useMutation({
         mutationFn: (tradeIds) => expireTrades(tradeIds),
+        onSuccess: invalidatePositions,
+    });
+
+    const createPositionMutation = useMutation({
+        mutationFn: ({ name, tradeIds }) => createPosition(name, tradeIds),
+        onSuccess: invalidatePositions,
+    });
+
+    const addToPositionMutation = useMutation({
+        mutationFn: ({ positionId, tradeIds }) => addTradesToPosition(positionId, tradeIds),
+        onSuccess: invalidatePositions,
+    });
+
+    const deletePositionMutation = useMutation({
+        mutationFn: deletePosition,
+        onSuccess: invalidatePositions,
+    });
+
+    const ungroupPositionMutation = useMutation({
+        mutationFn: ungroupPosition,
+        onSuccess: invalidatePositions,
+    });
+
+    const updatePositionMutation = useMutation({
+        mutationFn: ({ id, name, why }) => updatePosition(id, { name, why }),
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['positions'] });
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
+            invalidatePositions();
+            setEditingPositionId(null);
         },
     });
 
-    const createStrategyMutation = useMutation({
-        mutationFn: ({ name, tradeIds }) => createStrategy(name, tradeIds),
+    // Why options
+    const { data: whyOptions = [] } = useQuery({
+        queryKey: ['whyOptions'],
+        queryFn: getWhyOptions,
+    });
+
+    const addWhyOptionMutation = useMutation({
+        mutationFn: addWhyOption,
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
+            queryClient.invalidateQueries({ queryKey: ['whyOptions'] });
         },
     });
 
-    const addToStrategyMutation = useMutation({
-        mutationFn: ({ strategyId, tradeIds }) => addTradesToStrategy(strategyId, tradeIds),
+    const updateWhyOptionMutation = useMutation({
+        mutationFn: ({ id, label, note }) => updateWhyOption(id, { label, note }),
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
+            queryClient.invalidateQueries({ queryKey: ['whyOptions'] });
         },
     });
 
-    const deleteStrategyMutation = useMutation({
-        mutationFn: deleteStrategy,
+    const deleteWhyOptionMutation = useMutation({
+        mutationFn: deleteWhyOption,
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
+            queryClient.invalidateQueries({ queryKey: ['whyOptions'] });
         },
     });
 
-    const updateStrategyMutation = useMutation({
-        mutationFn: ({ id, name }) => updateStrategy(id, { name }),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['strategies'] });
-            setEditingStrategyId(null);
-        },
-    });
-
-    // Get trade IDs that are already in strategies
-    const groupedTradeIds = new Set(strategies.flatMap(s => s.tradeIds || []));
-
-    // Filter out positions whose trades are in strategies
-    const ungroupedPositions = positions.filter(pos =>
-        !pos.tradeIds?.some(id => groupedTradeIds.has(id))
-    );
+    // Why modal state
+    const [whyModal, setWhyModal] = useState(null);
+    const [whyModalName, setWhyModalName] = useState('');
+    const [whyModalNote, setWhyModalNote] = useState('');
 
     const handleSort = (key) => {
         setSortConfig(prev => ({
@@ -175,7 +203,7 @@ export default function StrategiesView({ filters = {} }) {
         });
     };
 
-    // Drag handlers - supports both positions and individual trades
+    // Drag handlers
     const handleDragStart = (e, item, type) => {
         setDraggedItem({ ...item, type });
         e.dataTransfer.effectAllowed = 'move';
@@ -185,7 +213,6 @@ export default function StrategiesView({ filters = {} }) {
     const handleDragOver = (e, target) => {
         e.preventDefault();
         e.stopPropagation();
-        // Allow drop if not dragging onto itself
         if (draggedItem) {
             const isSameItem = target.key === draggedItem.key;
             const isTradeInSamePosition = draggedItem.type === 'trade' &&
@@ -209,34 +236,28 @@ export default function StrategiesView({ filters = {} }) {
 
         if (!draggedItem) return;
 
-        // Get trade IDs from dragged item (single trade or position/strategy)
         const draggedTradeIds = draggedItem.type === 'trade'
             ? [draggedItem.tradeId]
             : (draggedItem.tradeIds || []);
 
-        if (target.type === 'strategy') {
-            // Drop onto existing strategy
-            addToStrategyMutation.mutate({
-                strategyId: target.id,
+        if (target.type === 'multileg') {
+            // Drop onto existing multi-leg position
+            addToPositionMutation.mutate({
+                positionId: target.id,
                 tradeIds: draggedTradeIds,
             });
-            // If dragging a whole strategy, delete the old one
-            if (draggedItem.type === 'strategy') {
-                deleteStrategyMutation.mutate(draggedItem.id);
-            }
         } else if (target.type === 'position' || target.type === 'trade') {
-            // Drop onto position or trade - create new strategy
+            // Drop onto position or trade - create new grouped position
             const targetTradeIds = target.type === 'trade'
                 ? [target.tradeId]
                 : (target.tradeIds || []);
             const allTradeIds = [...new Set([...draggedTradeIds, ...targetTradeIds])];
 
-            // Create name from the items being combined
             const draggedLabel = draggedItem.optionDisplay || draggedItem.displaySymbol || draggedItem.name || 'Trade';
             const targetLabel = target.optionDisplay || target.displaySymbol || 'Trade';
             const name = `${draggedLabel} + ${targetLabel}`;
 
-            createStrategyMutation.mutate({ name, tradeIds: allTradeIds });
+            createPositionMutation.mutate({ name, tradeIds: allTradeIds });
         }
 
         setDraggedItem(null);
@@ -246,7 +267,6 @@ export default function StrategiesView({ filters = {} }) {
         e.stopPropagation();
         setDraggedItem(null);
         setDropTarget(null);
-        setNewBasketHover(false);
     };
 
     const handleBasketDrop = (e, basketId) => {
@@ -256,18 +276,16 @@ export default function StrategiesView({ filters = {} }) {
 
         if (!draggedItem) return;
 
-        // Get trade IDs and display info from dragged item
         const draggedTradeIds = draggedItem.type === 'trade'
             ? [draggedItem.tradeId]
             : (draggedItem.tradeIds || []);
 
         const displayName = draggedItem.optionDisplay || draggedItem.displaySymbol || draggedItem.name || 'Trade';
 
-        // Add to specific basket (avoid duplicates across ALL baskets)
         setBaskets(prev => {
             const allExistingIds = new Set(prev.flatMap(b => b.items.flatMap(item => item.tradeIds)));
             const newIds = draggedTradeIds.filter(id => !allExistingIds.has(id));
-            if (newIds.length === 0) return prev; // Already in a basket
+            if (newIds.length === 0) return prev;
 
             return prev.map(basket => {
                 if (basket.id === basketId) {
@@ -313,7 +331,6 @@ export default function StrategiesView({ filters = {} }) {
     const removeBasket = (basketId) => {
         setBaskets(prev => {
             const filtered = prev.filter(b => b.id !== basketId);
-            // Always keep at least one basket
             if (filtered.length === 0) {
                 return [{ id: nextBasketId, name: '', items: [] }];
             }
@@ -329,28 +346,27 @@ export default function StrategiesView({ filters = {} }) {
         setNextBasketId(prev => prev + 1);
     };
 
-    const createStrategyFromBasket = (basketId) => {
+    const createPositionFromBasket = (basketId) => {
         const basket = baskets.find(b => b.id === basketId);
         if (!basket || basket.items.length === 0) return;
 
         const allTradeIds = basket.items.flatMap(item => item.tradeIds);
         const name = basket.name.trim() || basket.items.map(item => item.displayName).join(' + ');
 
-        createStrategyMutation.mutate({ name, tradeIds: allTradeIds });
+        createPositionMutation.mutate({ name, tradeIds: allTradeIds });
         removeBasket(basketId);
     };
 
-    const createAllStrategies = () => {
+    const createAllPositions = () => {
         const nonEmptyBaskets = baskets.filter(b => b.items.length > 0);
         if (nonEmptyBaskets.length === 0) return;
 
         nonEmptyBaskets.forEach(basket => {
             const allTradeIds = basket.items.flatMap(item => item.tradeIds);
             const name = basket.name.trim() || basket.items.map(item => item.displayName).join(' + ');
-            createStrategyMutation.mutate({ name, tradeIds: allTradeIds });
+            createPositionMutation.mutate({ name, tradeIds: allTradeIds });
         });
 
-        // Reset to single empty basket
         setBaskets([{ id: nextBasketId, name: '', items: [] }]);
         setNextBasketId(prev => prev + 1);
     };
@@ -386,7 +402,6 @@ export default function StrategiesView({ filters = {} }) {
 
         if (filters.search) {
             const searchUpper = filters.search.toUpperCase();
-            // Extract base symbol (e.g. "AAPL" from "AAPL260107C00150000")
             const getBase = (s) => s?.replace(/\d.*$/, '').replace(/W$/, '').toUpperCase();
             const match = getBase(p.symbol) === searchUpper ||
                           getBase(p.displaySymbol) === searchUpper ||
@@ -417,19 +432,26 @@ export default function StrategiesView({ filters = {} }) {
         return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
     });
 
-    const { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol } = useMemo(() => {
-        const filteredPositions = applyFilters(ungroupedPositions);
-        const filteredStrategies = applyFilters(strategies);
+    const { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol, simpleCount, multiLegCount, reviewCounts } = useMemo(() => {
+        const filtered = applyFilters(positions);
 
-        const allItems = [
-            ...filteredPositions.map((pos) => ({ ...pos, _key: `pos-${pos.tradeIds?.join('-') || pos.symbol}`, _isStrategy: false })),
-            ...filteredStrategies.map((s) => ({ ...s, _key: `strategy-${s.id}`, _isStrategy: true })),
-        ];
+        const allItems = filtered.map((pos) => ({
+            ...pos,
+            _key: `pos-${pos.id}`,
+        }));
         const sortedItems = sortItems(allItems);
 
         const totalPnl = allItems.reduce((sum, p) => sum + (p.pnl || 0), 0);
-        const totalVolume = allItems.reduce((sum, p) => sum + (p.buyTotal || 0) + (p.sellTotal || 0), 0);
+        const totalVolume = allItems.reduce((sum, p) => sum + (p.totalBuy || 0) + (p.totalSell || 0), 0);
         const totalTrades = allItems.reduce((sum, p) => sum + (p.trades?.length || p.legs || 0), 0);
+        const simpleCount = allItems.filter(p => !p.isMultiLeg).length;
+        const multiLegCount = allItems.filter(p => p.isMultiLeg).length;
+
+        const reviewCounts = {
+            notReviewed: allItems.filter(p => !p.reviewStatus || p.reviewStatus === 0).length,
+            reviewing: allItems.filter(p => p.reviewStatus === 1).length,
+            reviewed: allItems.filter(p => p.reviewStatus === 2).length,
+        };
 
         const symbolCounts = {};
         allItems.forEach(p => {
@@ -440,37 +462,60 @@ export default function StrategiesView({ filters = {} }) {
         });
         const topSymbol = Object.entries(symbolCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
 
-        return { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol };
-    }, [ungroupedPositions, strategies, statusFilter, filters, sortConfig]);
+        return { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol, simpleCount, multiLegCount, reviewCounts };
+    }, [positions, statusFilter, filters, sortConfig]);
 
-    const isLoading = loadingPositions || loadingStrategies;
+    // Tally: check all trades are accounted for (always uses unfiltered positions)
+    const tally = useMemo(() => {
+        if (!stats) return null;
+        const dbTotal = stats.total_trades;
+        const accountedFor = new Set(positions.flatMap(p => p.tradeIds || [])).size;
+        const orphaned = dbTotal - accountedFor;
+        const healthy = orphaned === 0;
+        const simpleAll = positions.filter(p => !p.isMultiLeg).length;
+        const multiLegAll = positions.filter(p => p.isMultiLeg).length;
+        // Count trades in each category
+        const simpleTradeIds = new Set(positions.filter(p => !p.isMultiLeg).flatMap(p => p.tradeIds || []));
+        const multiLegTradeIds = new Set(positions.filter(p => p.isMultiLeg).flatMap(p => p.tradeIds || []));
+        return {
+            dbTotal,
+            accountedFor,
+            orphaned,
+            healthy,
+            simple: simpleAll,
+            simpleTrades: simpleTradeIds.size,
+            multiLeg: multiLegAll,
+            multiLegTrades: multiLegTradeIds.size,
+        };
+    }, [stats, positions]);
 
-    // Render row for both positions and strategies
-    const renderRow = (item, key, isStrategy = false) => {
+    // Render row for all positions (simple and multi-leg)
+    const renderRow = (item, key) => {
         const isExpanded = expandedRows.has(key);
         const isDragging = draggedItem?.key === key;
         const isDropping = dropTarget?.key === key;
+        const isMultiLeg = item.isMultiLeg;
 
         return (
             <Fragment key={key}>
                 <tr
                     draggable
-                    onDragStart={(e) => handleDragStart(e, { ...item, key }, isStrategy ? 'strategy' : 'position')}
-                    onDragOver={(e) => handleDragOver(e, { ...item, key, type: isStrategy ? 'strategy' : 'position' })}
+                    onDragStart={(e) => handleDragStart(e, { ...item, key }, isMultiLeg ? 'multileg' : 'position')}
+                    onDragOver={(e) => handleDragOver(e, { ...item, key, type: isMultiLeg ? 'multileg' : 'position' })}
                     onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, { ...item, key, type: isStrategy ? 'strategy' : 'position' })}
+                    onDrop={(e) => handleDrop(e, { ...item, key, type: isMultiLeg ? 'multileg' : 'position' })}
                     onDragEnd={handleDragEnd}
                     onClick={() => toggleRow(key)}
                     className={`cursor-pointer transition-all ${
-                        isStrategy ? 'bg-purple-50 hover:bg-purple-100' : 'hover:bg-gray-50'
+                        isMultiLeg ? 'bg-purple-50 hover:bg-purple-100' : 'hover:bg-gray-50'
                     } ${isDragging ? 'opacity-50' : ''} ${
                         isDropping ? 'ring-2 ring-purple-500 ring-inset bg-purple-100' : ''
                     }`}
                 >
                     <td className="px-2 py-2 font-medium">
                         <span className="flex items-center gap-1">
-                            {isStrategy && (
-                                <span className="w-2 h-2 bg-purple-500 rounded-full flex-shrink-0" title="Strategy"></span>
+                            {isMultiLeg && (
+                                <span className="w-2 h-2 bg-purple-500 rounded-full flex-shrink-0" title="Multi-leg position"></span>
                             )}
                             <svg
                                 className={`h-3 w-3 transition-transform text-gray-400 flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
@@ -480,21 +525,21 @@ export default function StrategiesView({ filters = {} }) {
                             >
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                             </svg>
-                            {isStrategy ? (
-                                editingStrategyId === item.id ? (
+                            {isMultiLeg ? (
+                                editingPositionId === item.id ? (
                                     <input
                                         type="text"
                                         value={editingName}
                                         onChange={(e) => setEditingName(e.target.value)}
                                         onBlur={() => {
                                             if (editingName.trim()) {
-                                                updateStrategyMutation.mutate({ id: item.id, name: editingName });
+                                                updatePositionMutation.mutate({ id: item.id, name: editingName });
                                             }
-                                            setEditingStrategyId(null);
+                                            setEditingPositionId(null);
                                         }}
                                         onKeyDown={(e) => {
                                             if (e.key === 'Enter') e.target.blur();
-                                            if (e.key === 'Escape') setEditingStrategyId(null);
+                                            if (e.key === 'Escape') setEditingPositionId(null);
                                         }}
                                         onClick={(e) => e.stopPropagation()}
                                         className="px-1 py-0.5 border rounded text-sm w-40"
@@ -505,7 +550,7 @@ export default function StrategiesView({ filters = {} }) {
                                         className="hover:underline cursor-text"
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            setEditingStrategyId(item.id);
+                                            setEditingPositionId(item.id);
                                             setEditingName(item.name);
                                         }}
                                         title="Click to rename"
@@ -516,10 +561,10 @@ export default function StrategiesView({ filters = {} }) {
                             ) : (
                                 <span title={item.symbol}>{item.displaySymbol}</span>
                             )}
-                            {isStrategy && (
+                            {isMultiLeg && (
                                 <span className="text-xs text-purple-600">({item.legs} legs)</span>
                             )}
-                            {isStrategy && item.hasExpiredLegs && (
+                            {isMultiLeg && item.hasExpiredLegs && (
                                 <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded" title="Some legs expired">
                                     {item.expiredLegs?.length} expired
                                 </span>
@@ -527,8 +572,8 @@ export default function StrategiesView({ filters = {} }) {
                         </span>
                     </td>
                     <td className="px-2 py-2">
-                        {isStrategy ? (
-                            <span className="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">strategy</span>
+                        {isMultiLeg ? (
+                            <span className="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">multi-leg</span>
                         ) : (
                             <span className={`px-1.5 py-0.5 rounded text-xs ${
                                 item.asset_type === 'future' ? 'bg-purple-100 text-purple-700' :
@@ -539,9 +584,9 @@ export default function StrategiesView({ filters = {} }) {
                             </span>
                         )}
                     </td>
-                    <td className="px-2 py-2 text-right">{isStrategy ? '-' : item.quantity}</td>
-                    <td className="px-2 py-2 text-right">{formatCurrency(isStrategy ? item.totalBuy : item.buyTotal)}</td>
-                    <td className="px-2 py-2 text-right">{formatCurrency(isStrategy ? item.totalSell : item.sellTotal)}</td>
+                    <td className="px-2 py-2 text-right">{isMultiLeg ? '-' : item.quantity}</td>
+                    <td className="px-2 py-2 text-right">{formatCurrency(item.totalBuy)}</td>
+                    <td className="px-2 py-2 text-right">{formatCurrency(item.totalSell)}</td>
                     <td className={`px-2 py-2 text-right font-medium ${
                         item.pnl === null ? 'text-gray-400' :
                         item.pnl >= 0 ? 'text-green-600' : 'text-red-600'
@@ -557,7 +602,7 @@ export default function StrategiesView({ filters = {} }) {
                     <td className="px-2 py-2 whitespace-nowrap">{formatDate(item.buyDate)}</td>
                     <td className="px-2 py-2 whitespace-nowrap">{formatDate(item.sellDate)}</td>
                     <td className="px-2 py-2 whitespace-nowrap">
-                        {!isStrategy && item.asset_type === 'option' ? formatDate(item.expirationDate) : '-'}
+                        {!isMultiLeg && item.asset_type === 'option' ? formatDate(item.expirationDate) : '-'}
                     </td>
                     <td className="px-2 py-2">
                         <span className={`px-1.5 py-0.5 rounded text-xs ${
@@ -569,27 +614,50 @@ export default function StrategiesView({ filters = {} }) {
                             {item.status === 'pending_expiry' ? 'action' : item.status}
                         </span>
                     </td>
-                    <td className="px-2 py-2 capitalize">{isStrategy ? '-' : item.broker}</td>
+                    <td className="px-2 py-2 capitalize">{isMultiLeg ? '-' : item.broker}</td>
                     <td className="px-2 py-2">
-                        {isStrategy ? (
+                        <div className="flex items-center gap-1">
                             <select
                                 value={item.why || ''}
                                 onChange={(e) => {
                                     e.stopPropagation();
-                                    updateStrategyMutation.mutate({ id: item.id, why: e.target.value || null });
+                                    const val = e.target.value;
+                                    if (val === '__add__') {
+                                        setWhyModalName('');
+                                        setWhyModalNote('');
+                                        setWhyModal({ mode: 'add', positionId: item.id });
+                                        e.target.value = item.why || '';
+                                        return;
+                                    }
+                                    updatePositionMutation.mutate({ id: item.id, why: val || null });
                                 }}
                                 onClick={(e) => e.stopPropagation()}
                                 className="px-2 py-1 text-xs border rounded bg-white"
                             >
                                 <option value="">Select...</option>
-                                <option value="winning">Winning</option>
-                                <option value="losing">Losing</option>
-                                <option value="neutral">Neutral</option>
-                                <option value="learning">Learning</option>
+                                {whyOptions.map((opt) => (
+                                    <option key={opt.id} value={opt.label}>{opt.label}</option>
+                                ))}
+                                <option value="__add__">+ Add new...</option>
                             </select>
-                        ) : (
-                            '-'
-                        )}
+                            {item.why && whyOptions.find(o => o.label === item.why) && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        const opt = whyOptions.find(o => o.label === item.why);
+                                        setWhyModalName(opt.label);
+                                        setWhyModalNote(opt.note || '');
+                                        setWhyModal({ mode: 'edit', option: opt, positionId: item.id });
+                                    }}
+                                    className="text-gray-400 hover:text-purple-600 transition-colors"
+                                    title="View / edit reason"
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                    </svg>
+                                </button>
+                            )}
+                        </div>
                     </td>
                     <td className="px-2 py-2 text-center">
                         <div className="flex items-center justify-center gap-1">
@@ -639,12 +707,12 @@ export default function StrategiesView({ filters = {} }) {
                                     Reviewed
                                 </button>
                             )}
-                            {isStrategy && (
+                            {isMultiLeg && (
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        if (confirm('Ungroup this strategy?')) {
-                                            deleteStrategyMutation.mutate(item.id);
+                                        if (confirm('Ungroup this position?')) {
+                                            ungroupPositionMutation.mutate(item.id);
                                         }
                                     }}
                                     className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600"
@@ -657,10 +725,10 @@ export default function StrategiesView({ filters = {} }) {
                     </td>
                 </tr>
                 {isExpanded && (
-                    <tr className={isStrategy ? 'bg-purple-50' : 'bg-gray-50'}>
-                        <td colSpan={13} className="px-4 py-2">
+                    <tr className={isMultiLeg ? 'bg-purple-50' : 'bg-gray-50'}>
+                        <td colSpan={14} className="px-4 py-2">
                             <div className="text-xs text-gray-600 mb-2 font-medium">
-                                {isStrategy ? 'Strategy Trades' : 'Trades'} - Drag individual trades to group
+                                {isMultiLeg ? 'Position Trades' : 'Trades'} - Drag individual trades to group
                             </div>
                             <table className="w-full text-xs">
                                 <thead>
@@ -749,7 +817,7 @@ export default function StrategiesView({ filters = {} }) {
                             </table>
 
                             {/* Pending expiry legs - need action */}
-                            {isStrategy && item.pendingExpiryLegs?.length > 0 && (
+                            {isMultiLeg && item.pendingExpiryLegs?.length > 0 && (
                                 <div className="mt-4 p-3 bg-orange-50 rounded border border-orange-200">
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="text-xs font-medium text-orange-800">
@@ -814,7 +882,7 @@ export default function StrategiesView({ filters = {} }) {
                             )}
 
                             {/* Already expired legs - showing P&L */}
-                            {isStrategy && item.expiredLegs?.length > 0 && (
+                            {isMultiLeg && item.expiredLegs?.length > 0 && (
                                 <div className="mt-4 p-3 bg-red-50 rounded border border-red-200">
                                     <div className="text-xs font-medium text-red-800 mb-2">
                                         Expired Worthless
@@ -869,15 +937,71 @@ export default function StrategiesView({ filters = {} }) {
 
     return (
         <div>
-            {/* Stats cards - dynamic based on filters */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 bg-gray-50 border-b">
-                <div className="bg-white rounded-lg shadow-sm p-3">
-                    <p className="text-gray-500 text-xs">Positions</p>
+            {/* Stats cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 bg-gray-50 border-b">
+                <div className="bg-white rounded-lg shadow-sm p-3 relative">
+                    <div className="flex items-center gap-1.5">
+                        <p className="text-gray-500 text-xs">Positions</p>
+                        {tally && (
+                            <div className="relative">
+                                <button
+                                    onClick={() => setTallyOpen(!tallyOpen)}
+                                    className={`w-2.5 h-2.5 rounded-full ${tally.healthy ? 'bg-green-500' : 'bg-red-500'} hover:ring-2 hover:ring-offset-1 ${tally.healthy ? 'hover:ring-green-300' : 'hover:ring-red-300'} transition-all cursor-pointer`}
+                                    title={tally.healthy ? 'All trades accounted for' : `${tally.orphaned} orphaned trades`}
+                                />
+                                {tallyOpen && (
+                                    <div
+                                        className="absolute top-5 left-0 z-50 bg-white border rounded-lg shadow-xl p-4 w-56"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        <div className="flex items-center justify-between mb-3">
+                                            <p className="text-xs font-semibold text-gray-700">Trade Tally</p>
+                                            <span className={`text-xs px-1.5 py-0.5 rounded ${tally.healthy ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                {tally.healthy ? 'Healthy' : 'Mismatch'}
+                                            </span>
+                                        </div>
+                                        <div className="space-y-1.5 text-xs">
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-500">DB Trades</span>
+                                                <span className="font-medium">{tally.dbTotal}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-500">In simple ({tally.simple} pos)</span>
+                                                <span className="font-medium">{tally.simpleTrades}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-500">In multi-leg ({tally.multiLeg} pos)</span>
+                                                <span className="font-medium">{tally.multiLegTrades}</span>
+                                            </div>
+                                            <div className="border-t pt-1.5 flex justify-between">
+                                                <span className="text-gray-500">Accounted for</span>
+                                                <span className="font-medium">{tally.accountedFor}</span>
+                                            </div>
+                                            {tally.orphaned !== 0 && (
+                                                <div className="flex justify-between text-red-600">
+                                                    <span>Orphaned</span>
+                                                    <span className="font-medium">{tally.orphaned}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     <p className="text-xl font-bold">{allItems.length}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                        {simpleCount} simple &middot; {multiLegCount} multi-leg
+                    </p>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm p-3">
                     <p className="text-gray-500 text-xs">Total Trades</p>
                     <p className="text-xl font-bold">{totalTrades}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-green-600">{reviewCounts.reviewed} reviewed</span>
+                        <span className="text-xs text-orange-500">{reviewCounts.reviewing} reviewing</span>
+                        <span className="text-xs text-gray-400">{reviewCounts.notReviewed} pending</span>
+                    </div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm p-3">
                     <p className="text-gray-500 text-xs">Volume</p>
@@ -889,19 +1013,23 @@ export default function StrategiesView({ filters = {} }) {
                         {formatCurrency(totalPnl)}
                     </p>
                 </div>
+                <div className="bg-white rounded-lg shadow-sm p-3">
+                    <p className="text-gray-500 text-xs">Top Symbol</p>
+                    <p className="text-xl font-bold">{topSymbol}</p>
+                </div>
             </div>
 
-            {/* Strategies view header */}
+            {/* Header */}
             <div className="p-4 border-b">
                 <div className="flex justify-between items-center mb-3">
                     <div className="flex items-center gap-3">
                         <p className="text-sm text-gray-600">
-                            Drag trades to baskets to create strategies
+                            Drag trades to baskets to create grouped positions
                         </p>
-                        {strategies.length > 0 && (
+                        {multiLegCount > 0 && (
                             <span className="text-sm text-purple-600 flex items-center gap-1">
                                 <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
-                                {strategies.length} strategies
+                                {multiLegCount} multi-leg
                             </span>
                         )}
                         {topSymbol !== '-' && (
@@ -930,12 +1058,11 @@ export default function StrategiesView({ filters = {} }) {
                 </div>
             </div>
 
-            {/* Strategy baskets - collect trades before creating */}
+            {/* Baskets */}
             <div className="mx-4 my-3 space-y-3">
-                {/* Basket controls */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600">Strategy Baskets</span>
+                        <span className="text-sm text-gray-600">Position Baskets</span>
                         <span className="text-xs text-gray-400">({baskets.filter(b => b.items.length > 0).length} with items)</span>
                     </div>
                     <div className="flex gap-2">
@@ -947,16 +1074,15 @@ export default function StrategiesView({ filters = {} }) {
                         </button>
                         {baskets.filter(b => b.items.length > 0).length > 1 && (
                             <button
-                                onClick={createAllStrategies}
+                                onClick={createAllPositions}
                                 className="px-3 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
                             >
-                                Create All Strategies
+                                Create All Positions
                             </button>
                         )}
                     </div>
                 </div>
 
-                {/* Individual baskets */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {baskets.map((basket) => {
                         const isHovering = hoverBasketId === basket.id;
@@ -1024,16 +1150,14 @@ export default function StrategiesView({ filters = {} }) {
                                             </button>
                                         </div>
 
-                                        {/* Strategy name input */}
                                         <input
                                             type="text"
                                             value={basket.name}
                                             onChange={(e) => updateBasketName(basket.id, e.target.value)}
-                                            placeholder="Strategy name"
+                                            placeholder="Position name"
                                             className="w-full px-2 py-1 mb-2 text-sm border border-purple-200 rounded focus:outline-none focus:border-purple-400"
                                         />
 
-                                        {/* Basket items */}
                                         <div className="flex flex-wrap gap-1 mb-2">
                                             {basket.items.map((item, idx) => (
                                                 <span
@@ -1053,7 +1177,6 @@ export default function StrategiesView({ filters = {} }) {
                                             ))}
                                         </div>
 
-                                        {/* Drop zone for adding more items */}
                                         <div
                                             onDragOver={(e) => {
                                                 e.preventDefault();
@@ -1074,12 +1197,11 @@ export default function StrategiesView({ filters = {} }) {
                                             + Drop more
                                         </div>
 
-                                        {/* Create button */}
                                         <button
-                                            onClick={() => createStrategyFromBasket(basket.id)}
+                                            onClick={() => createPositionFromBasket(basket.id)}
                                             className="w-full py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-xs font-medium"
                                         >
-                                            Create Strategy
+                                            Create Position
                                         </button>
                                     </div>
                                 )}
@@ -1107,11 +1229,11 @@ export default function StrategiesView({ filters = {} }) {
                                 <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('quantity')}>
                                     Qty<SortIcon columnKey="quantity" />
                                 </th>
-                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('buyTotal')}>
-                                    Buy<SortIcon columnKey="buyTotal" />
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('totalBuy')}>
+                                    Buy<SortIcon columnKey="totalBuy" />
                                 </th>
-                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sellTotal')}>
-                                    Sell<SortIcon columnKey="sellTotal" />
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('totalSell')}>
+                                    Sell<SortIcon columnKey="totalSell" />
                                 </th>
                                 <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('pnl')}>
                                     P&L<SortIcon columnKey="pnl" />
@@ -1139,9 +1261,107 @@ export default function StrategiesView({ filters = {} }) {
                             </tr>
                         </thead>
                         <tbody className="divide-y">
-                            {sortedItems.map((item) => renderRow(item, item._key, item._isStrategy))}
+                            {sortedItems.map((item) => renderRow(item, item._key))}
                         </tbody>
                     </table>
+                </div>
+            )}
+            {/* Why Option Modal */}
+            {whyModal && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center"
+                    onClick={() => setWhyModal(null)}
+                >
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+                    <div
+                        className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
+                            <h3 className="text-lg font-semibold text-white">
+                                {whyModal.mode === 'add' ? 'New Position Reason' : 'Position Reason'}
+                            </h3>
+                            <p className="text-purple-200 text-sm mt-0.5">
+                                {whyModal.mode === 'add' ? 'Add a new reason for your trade' : 'View or edit this reason'}
+                            </p>
+                        </div>
+
+                        <div className="px-6 py-5 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Name</label>
+                                <input
+                                    type="text"
+                                    value={whyModalName}
+                                    onChange={(e) => setWhyModalName(e.target.value)}
+                                    placeholder="e.g. Earnings Play, Momentum, Hedge..."
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
+                                    autoFocus
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Notes</label>
+                                <textarea
+                                    value={whyModalNote}
+                                    onChange={(e) => setWhyModalNote(e.target.value)}
+                                    placeholder="Describe the strategy rationale..."
+                                    rows={3}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all resize-none"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="px-6 py-4 bg-gray-50 flex items-center justify-between border-t">
+                            <div>
+                                {whyModal.mode === 'edit' && (
+                                    <button
+                                        onClick={() => {
+                                            deleteWhyOptionMutation.mutate(whyModal.option.id);
+                                            if (whyModal.positionId) {
+                                                updatePositionMutation.mutate({ id: whyModal.positionId, why: null });
+                                            }
+                                            setWhyModal(null);
+                                        }}
+                                        className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+                                    >
+                                        Delete
+                                    </button>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setWhyModal(null)}
+                                    className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (!whyModalName.trim()) return;
+                                        if (whyModal.mode === 'add') {
+                                            addWhyOptionMutation.mutate({ label: whyModalName.trim(), note: whyModalNote.trim() || null });
+                                            if (whyModal.positionId) {
+                                                updatePositionMutation.mutate({ id: whyModal.positionId, why: whyModalName.trim() });
+                                            }
+                                        } else {
+                                            updateWhyOptionMutation.mutate({
+                                                id: whyModal.option.id,
+                                                label: whyModalName.trim(),
+                                                note: whyModalNote.trim() || null,
+                                            });
+                                            if (whyModal.positionId) {
+                                                updatePositionMutation.mutate({ id: whyModal.positionId, why: whyModalName.trim() });
+                                            }
+                                        }
+                                        setWhyModal(null);
+                                    }}
+                                    disabled={!whyModalName.trim()}
+                                    className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
