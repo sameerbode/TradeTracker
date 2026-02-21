@@ -39,6 +39,7 @@ export function getAllStrategies() {
             id: strategy.id,
             name: strategy.name,
             notes: strategy.notes,
+            why: strategy.why,
             created_at: strategy.created_at,
             tradeIds,
             trades: trades.map(t => ({
@@ -266,9 +267,9 @@ export function createStrategy(name, tradeIds = [], notes = '') {
 }
 
 /**
- * Update strategy name or notes
+ * Update strategy name, notes, or why
  */
-export function updateStrategy(id, { name, notes }) {
+export function updateStrategy(id, { name, notes, why }) {
     const db = getDb();
 
     const updates = [];
@@ -281,6 +282,10 @@ export function updateStrategy(id, { name, notes }) {
     if (notes !== undefined) {
         updates.push('notes = ?');
         params.push(notes);
+    }
+    if (why !== undefined) {
+        updates.push('why = ?');
+        params.push(why);
     }
 
     if (updates.length === 0) {

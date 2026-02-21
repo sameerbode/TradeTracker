@@ -60,6 +60,13 @@ export function getDb() {
         if (!hasImportId) {
             db.exec('ALTER TABLE trades ADD COLUMN import_id INTEGER REFERENCES imports(id)');
         }
+
+        // Migration: add why column to strategies if it doesn't exist
+        const strategyColumns = db.prepare("PRAGMA table_info(strategies)").all();
+        const hasWhy = strategyColumns.some(col => col.name === 'why');
+        if (!hasWhy) {
+            db.exec('ALTER TABLE strategies ADD COLUMN why TEXT');
+        }
     }
     return db;
 }

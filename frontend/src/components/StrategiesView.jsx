@@ -570,6 +570,27 @@ export default function StrategiesView({ filters = {} }) {
                         </span>
                     </td>
                     <td className="px-2 py-2 capitalize">{isStrategy ? '-' : item.broker}</td>
+                    <td className="px-2 py-2">
+                        {isStrategy ? (
+                            <select
+                                value={item.why || ''}
+                                onChange={(e) => {
+                                    e.stopPropagation();
+                                    updateStrategyMutation.mutate({ id: item.id, why: e.target.value || null });
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="px-2 py-1 text-xs border rounded bg-white"
+                            >
+                                <option value="">Select...</option>
+                                <option value="winning">Winning</option>
+                                <option value="losing">Losing</option>
+                                <option value="neutral">Neutral</option>
+                                <option value="learning">Learning</option>
+                            </select>
+                        ) : (
+                            '-'
+                        )}
+                    </td>
                     <td className="px-2 py-2 text-center">
                         <div className="flex items-center justify-center gap-1">
                             {(item.reviewStatus === 0 || item.reviewStatus === undefined) && (
@@ -650,7 +671,8 @@ export default function StrategiesView({ filters = {} }) {
                                         <th className="text-right py-1 pr-4">Qty</th>
                                         <th className="text-right py-1 pr-4">Price</th>
                                         <th className="text-right py-1 pr-4">Total</th>
-                                        <th className="text-left py-1">Date</th>
+                                        <th className="text-left py-1 pr-4">Date</th>
+                                        <th className="text-left py-1">Broker</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -710,7 +732,7 @@ export default function StrategiesView({ filters = {} }) {
                                                 <td className="text-right py-1 pr-4">{trade.quantity}</td>
                                                 <td className="text-right py-1 pr-4">{formatCurrency(trade.price)}</td>
                                                 <td className="text-right py-1 pr-4">{formatCurrency(trade.total)}</td>
-                                                <td className="py-1">
+                                                <td className="py-1 pr-4">
                                                     {new Date(trade.executed_at).toLocaleString('en-US', {
                                                         month: 'numeric',
                                                         day: 'numeric',
@@ -719,6 +741,7 @@ export default function StrategiesView({ filters = {} }) {
                                                         minute: '2-digit',
                                                     })}
                                                 </td>
+                                                <td className="py-1 capitalize">{trade.broker}</td>
                                             </tr>
                                         );
                                     })}
@@ -1111,6 +1134,7 @@ export default function StrategiesView({ filters = {} }) {
                                 <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('broker')}>
                                     Broker<SortIcon columnKey="broker" />
                                 </th>
+                                <th className="px-2 py-2 text-left font-medium text-gray-600">Why</th>
                                 <th className="px-2 py-2 text-center font-medium text-gray-600">Actions</th>
                             </tr>
                         </thead>
