@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { schema } from './schema.js';
@@ -8,11 +8,23 @@ const dbPath = path.join(__dirname, '../../data/trades.db');
 
 let db = null;
 
+export function withTransaction(db, fn) {
+    db.exec('BEGIN');
+    try {
+        const result = fn();
+        db.exec('COMMIT');
+        return result;
+    } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+    }
+}
+
 export function getDb() {
     if (!db) {
-        db = new Database(dbPath);
-        db.pragma('journal_mode = WAL');
-        db.pragma('foreign_keys = ON');
+        db = new DatabaseSync(dbPath);
+        db.exec('PRAGMA journal_mode = WAL');
+        db.exec('PRAGMA foreign_keys = ON');
         db.exec(schema);
 
         // Migrations

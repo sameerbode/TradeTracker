@@ -1,4 +1,4 @@
-import { getDb } from '../db/database.js';
+import { getDb, withTransaction } from '../db/database.js';
 import { getOrCreateAccount } from './accountService.js';
 import { insertTrades } from './tradeService.js';
 import {
@@ -132,7 +132,7 @@ export function importBackup(backup) {
     const { accounts, trades, strategies, strategyTrades } = backup.data;
 
     // Use a transaction to ensure atomicity
-    const transaction = db.transaction(() => {
+    return withTransaction(db, () => {
         // Clear existing data in reverse dependency order
         db.prepare('DELETE FROM strategy_trades').run();
         db.prepare('DELETE FROM strategies').run();
@@ -191,6 +191,4 @@ export function importBackup(backup) {
             strategyTrades: strategyTrades.length
         };
     });
-
-    return transaction();
 }

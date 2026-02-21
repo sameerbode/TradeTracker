@@ -1,4 +1,4 @@
-import { getDb } from '../db/database.js';
+import { getDb, withTransaction } from '../db/database.js';
 import { parseOptionSymbol, getDisplaySymbol } from '../utils/optionParser.js';
 
 /**
@@ -188,7 +188,7 @@ export function insertTrades(accountId, trades) {
     let imported = 0;
     let skipped = 0;
 
-    const insertMany = db.transaction((trades) => {
+    withTransaction(db, () => {
         for (const trade of trades) {
             const result = insert.run(
                 accountId,
@@ -210,8 +210,6 @@ export function insertTrades(accountId, trades) {
             }
         }
     });
-
-    insertMany(trades);
 
     return { imported, skipped };
 }
