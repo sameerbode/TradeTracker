@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, Fragment } from 'react';
+import { useState, Fragment, useMemo, useCallback } from 'react';
 import {
     getRoundTripPositions,
     setTradesReview,
@@ -63,11 +63,29 @@ export default function StrategiesView({ filters = {} }) {
         queryFn: getStrategies,
     });
 
-    // Mutations
+    // Mutations with optimistic updates
     // Review status: 0=none, 1=reviewing, 2=reviewed
     const reviewMutation = useMutation({
         mutationFn: ({ tradeIds, status }) => setTradesReview(tradeIds, status),
-        onSuccess: () => {
+        onMutate: async ({ tradeIds, status }) => {
+            await queryClient.cancelQueries({ queryKey: ['positions', 'roundtrip'] });
+            await queryClient.cancelQueries({ queryKey: ['strategies'] });
+            const prevPositions = queryClient.getQueryData(['positions', 'roundtrip']);
+            const prevStrategies = queryClient.getQueryData(['strategies']);
+            const tradeIdSet = new Set(tradeIds);
+            queryClient.setQueryData(['positions', 'roundtrip'], old =>
+                old?.map(p => p.tradeIds?.some(id => tradeIdSet.has(id)) ? { ...p, reviewStatus: status } : p)
+            );
+            queryClient.setQueryData(['strategies'], old =>
+                old?.map(s => s.tradeIds?.some(id => tradeIdSet.has(id)) ? { ...s, reviewStatus: status } : s)
+            );
+            return { prevPositions, prevStrategies };
+        },
+        onError: (_err, _vars, context) => {
+            queryClient.setQueryData(['positions', 'roundtrip'], context.prevPositions);
+            queryClient.setQueryData(['strategies'], context.prevStrategies);
+        },
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['positions'] });
             queryClient.invalidateQueries({ queryKey: ['strategies'] });
         },
@@ -367,11 +385,13 @@ export default function StrategiesView({ filters = {} }) {
         if (statusFilter === 'review' && p.reviewStatus !== 1) return false;
 
         if (filters.search) {
-            const searchLower = filters.search.toLowerCase();
-            const match = p.symbol?.toLowerCase().includes(searchLower) ||
-                          p.displaySymbol?.toLowerCase().includes(searchLower) ||
-                          p.name?.toLowerCase().includes(searchLower) ||
-                          p.symbols?.some(s => s.toLowerCase().includes(searchLower));
+            const searchUpper = filters.search.toUpperCase();
+            // Extract base symbol (e.g. "AAPL" from "AAPL260107C00150000")
+            const getBase = (s) => s?.replace(/\d.*$/, '').replace(/W$/, '').toUpperCase();
+            const match = getBase(p.symbol) === searchUpper ||
+                          getBase(p.displaySymbol) === searchUpper ||
+                          p.name?.toUpperCase() === searchUpper ||
+                          p.symbols?.some(s => getBase(s) === searchUpper);
             if (!match) return false;
         }
 
@@ -397,29 +417,31 @@ export default function StrategiesView({ filters = {} }) {
         return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
     });
 
-    const filteredPositions = applyFilters(ungroupedPositions);
-    const filteredStrategies = applyFilters(strategies);
+    const { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol } = useMemo(() => {
+        const filteredPositions = applyFilters(ungroupedPositions);
+        const filteredStrategies = applyFilters(strategies);
 
-    // Combine positions and strategies, tag each, then sort together
-    const allItems = [
-        ...filteredPositions.map((pos) => ({ ...pos, _key: `pos-${pos.tradeIds?.join('-') || pos.symbol}`, _isStrategy: false })),
-        ...filteredStrategies.map((s) => ({ ...s, _key: `strategy-${s.id}`, _isStrategy: true })),
-    ];
-    const sortedItems = sortItems(allItems);
+        const allItems = [
+            ...filteredPositions.map((pos) => ({ ...pos, _key: `pos-${pos.tradeIds?.join('-') || pos.symbol}`, _isStrategy: false })),
+            ...filteredStrategies.map((s) => ({ ...s, _key: `strategy-${s.id}`, _isStrategy: true })),
+        ];
+        const sortedItems = sortItems(allItems);
 
-    const totalPnl = allItems.reduce((sum, p) => sum + (p.pnl || 0), 0);
-    const totalVolume = allItems.reduce((sum, p) => sum + (p.buyTotal || 0) + (p.sellTotal || 0), 0);
-    const totalTrades = allItems.reduce((sum, p) => sum + (p.trades?.length || p.legs || 0), 0);
+        const totalPnl = allItems.reduce((sum, p) => sum + (p.pnl || 0), 0);
+        const totalVolume = allItems.reduce((sum, p) => sum + (p.buyTotal || 0) + (p.sellTotal || 0), 0);
+        const totalTrades = allItems.reduce((sum, p) => sum + (p.trades?.length || p.legs || 0), 0);
 
-    // Find top symbol
-    const symbolCounts = {};
-    allItems.forEach(p => {
-        const symbols = p.symbols || [p.displaySymbol || p.symbol];
-        symbols.forEach(s => {
-            if (s) symbolCounts[s] = (symbolCounts[s] || 0) + 1;
+        const symbolCounts = {};
+        allItems.forEach(p => {
+            const symbols = p.symbols || [p.displaySymbol || p.symbol];
+            symbols.forEach(s => {
+                if (s) symbolCounts[s] = (symbolCounts[s] || 0) + 1;
+            });
         });
-    });
-    const topSymbol = Object.entries(symbolCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
+        const topSymbol = Object.entries(symbolCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
+
+        return { sortedItems, allItems, totalPnl, totalVolume, totalTrades, topSymbol };
+    }, [ungroupedPositions, strategies, statusFilter, filters, sortConfig]);
 
     const isLoading = loadingPositions || loadingStrategies;
 
@@ -445,13 +467,13 @@ export default function StrategiesView({ filters = {} }) {
                         isDropping ? 'ring-2 ring-purple-500 ring-inset bg-purple-100' : ''
                     }`}
                 >
-                    <td className="px-4 py-3 font-medium">
-                        <span className="flex items-center gap-2">
+                    <td className="px-2 py-2 font-medium">
+                        <span className="flex items-center gap-1">
                             {isStrategy && (
                                 <span className="w-2 h-2 bg-purple-500 rounded-full flex-shrink-0" title="Strategy"></span>
                             )}
                             <svg
-                                className={`h-4 w-4 transition-transform text-gray-400 flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                                className={`h-3 w-3 transition-transform text-gray-400 flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
                                 fill="none"
                                 stroke="currentColor"
                                 viewBox="0 0 24 24"
@@ -504,11 +526,11 @@ export default function StrategiesView({ filters = {} }) {
                             )}
                         </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-2 py-2">
                         {isStrategy ? (
-                            <span className="px-2 py-0.5 rounded text-xs bg-purple-100 text-purple-700">strategy</span>
+                            <span className="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">strategy</span>
                         ) : (
-                            <span className={`px-2 py-0.5 rounded text-xs ${
+                            <span className={`px-1.5 py-0.5 rounded text-xs ${
                                 item.asset_type === 'future' ? 'bg-purple-100 text-purple-700' :
                                 item.asset_type === 'option' ? 'bg-blue-100 text-blue-700' :
                                 'bg-gray-100 text-gray-700'
@@ -517,38 +539,38 @@ export default function StrategiesView({ filters = {} }) {
                             </span>
                         )}
                     </td>
-                    <td className="px-4 py-3 text-right">{isStrategy ? '-' : item.quantity}</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(isStrategy ? item.totalBuy : item.buyTotal)}</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(isStrategy ? item.totalSell : item.sellTotal)}</td>
-                    <td className={`px-4 py-3 text-right font-medium ${
+                    <td className="px-2 py-2 text-right">{isStrategy ? '-' : item.quantity}</td>
+                    <td className="px-2 py-2 text-right">{formatCurrency(isStrategy ? item.totalBuy : item.buyTotal)}</td>
+                    <td className="px-2 py-2 text-right">{formatCurrency(isStrategy ? item.totalSell : item.sellTotal)}</td>
+                    <td className={`px-2 py-2 text-right font-medium ${
                         item.pnl === null ? 'text-gray-400' :
                         item.pnl >= 0 ? 'text-green-600' : 'text-red-600'
                     }`}>
                         {formatCurrency(item.pnl)}
                     </td>
-                    <td className={`px-4 py-3 text-right ${
+                    <td className={`px-2 py-2 text-right ${
                         item.pnlPercent === null ? 'text-gray-400' :
                         item.pnlPercent >= 0 ? 'text-green-600' : 'text-red-600'
                     }`}>
                         {formatPercent(item.pnlPercent)}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">{formatDate(item.buyDate)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">{formatDate(item.sellDate)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-2 py-2 whitespace-nowrap">{formatDate(item.buyDate)}</td>
+                    <td className="px-2 py-2 whitespace-nowrap">{formatDate(item.sellDate)}</td>
+                    <td className="px-2 py-2 whitespace-nowrap">
                         {!isStrategy && item.asset_type === 'option' ? formatDate(item.expirationDate) : '-'}
                     </td>
-                    <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded text-xs ${
+                    <td className="px-2 py-2">
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${
                             item.status === 'open' ? 'bg-yellow-100 text-yellow-700' :
                             item.status === 'pending_expiry' ? 'bg-orange-100 text-orange-700' :
                             item.status === 'expired' ? 'bg-red-100 text-red-700' :
                             'bg-green-100 text-green-700'
                         }`}>
-                            {item.status === 'pending_expiry' ? 'action required' : item.status}
+                            {item.status === 'pending_expiry' ? 'action' : item.status}
                         </span>
                     </td>
-                    <td className="px-4 py-3 capitalize">{isStrategy ? '-' : item.broker}</td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-2 py-2 capitalize">{isStrategy ? '-' : item.broker}</td>
+                    <td className="px-2 py-2 text-center">
                         <div className="flex items-center justify-center gap-1">
                             {(item.reviewStatus === 0 || item.reviewStatus === undefined) && (
                                 <button
@@ -615,7 +637,7 @@ export default function StrategiesView({ filters = {} }) {
                 </tr>
                 {isExpanded && (
                     <tr className={isStrategy ? 'bg-purple-50' : 'bg-gray-50'}>
-                        <td colSpan={13} className="px-8 py-3">
+                        <td colSpan={13} className="px-4 py-2">
                             <div className="text-xs text-gray-600 mb-2 font-medium">
                                 {isStrategy ? 'Strategy Trades' : 'Trades'} - Drag individual trades to group
                             </div>
@@ -1050,46 +1072,46 @@ export default function StrategiesView({ filters = {} }) {
                 <div className="p-8 text-center text-gray-500">No positions found.</div>
             ) : (
                 <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+                    <table className="w-full text-xs">
                         <thead className="bg-gray-50">
                             <tr>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('displaySymbol')}>
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('displaySymbol')}>
                                     Symbol<SortIcon columnKey="displaySymbol" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('asset_type')}>
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('asset_type')}>
                                     Type<SortIcon columnKey="asset_type" />
                                 </th>
-                                <th className="px-4 py-3 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('quantity')}>
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('quantity')}>
                                     Qty<SortIcon columnKey="quantity" />
                                 </th>
-                                <th className="px-4 py-3 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('buyTotal')}>
-                                    Buy Total<SortIcon columnKey="buyTotal" />
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('buyTotal')}>
+                                    Buy<SortIcon columnKey="buyTotal" />
                                 </th>
-                                <th className="px-4 py-3 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sellTotal')}>
-                                    Sell Total<SortIcon columnKey="sellTotal" />
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sellTotal')}>
+                                    Sell<SortIcon columnKey="sellTotal" />
                                 </th>
-                                <th className="px-4 py-3 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('pnl')}>
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('pnl')}>
                                     P&L<SortIcon columnKey="pnl" />
                                 </th>
-                                <th className="px-4 py-3 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('pnlPercent')}>
+                                <th className="px-2 py-2 text-right font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('pnlPercent')}>
                                     %<SortIcon columnKey="pnlPercent" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('buyDate')}>
-                                    Opened<SortIcon columnKey="buyDate" />
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('buyDate')}>
+                                    Open<SortIcon columnKey="buyDate" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sellDate')}>
-                                    Closed<SortIcon columnKey="sellDate" />
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('sellDate')}>
+                                    Close<SortIcon columnKey="sellDate" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('expirationDate')}>
-                                    Expiry<SortIcon columnKey="expirationDate" />
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('expirationDate')}>
+                                    Exp<SortIcon columnKey="expirationDate" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
                                     Status<SortIcon columnKey="status" />
                                 </th>
-                                <th className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('broker')}>
+                                <th className="px-2 py-2 text-left font-medium text-gray-600 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('broker')}>
                                     Broker<SortIcon columnKey="broker" />
                                 </th>
-                                <th className="px-4 py-3 text-center font-medium text-gray-600">Actions</th>
+                                <th className="px-2 py-2 text-center font-medium text-gray-600">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">

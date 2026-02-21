@@ -208,11 +208,10 @@ function calculateStrategyMetrics(trades) {
     let status = 'open';
 
     if (allBalancedOrExpired && pendingExpiryLegs.length === 0) {
+        // Start with P&L from balanced (closed) legs only
         pnl = totalSell - totalBuy;
-        // Add P&L impact from manually expired legs
-        for (const leg of expiredLegs) {
-            pnl += leg.pnlImpact;
-        }
+        // Expired legs' cost is already included in totalBuy/totalSell above,
+        // so we do NOT add pnlImpact again — it would double-count
         pnlPercent = totalBuy > 0 ? (pnl / totalBuy) * 100 : null;
         status = expiredLegs.length > 0 ? 'expired' : 'closed';
     } else if (pendingExpiryLegs.length > 0) {

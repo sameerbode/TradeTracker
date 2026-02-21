@@ -43,8 +43,9 @@ export default function TradeTable({ filters = {} }) {
     const filteredTrades = (trades || []).filter(t => {
         if (reviewFilter === 'review' && !t.review) return false;
         if (filters.search) {
-            const searchLower = filters.search.toLowerCase();
-            return t.symbol?.toLowerCase().includes(searchLower);
+            const searchUpper = filters.search.toUpperCase();
+            const getBase = (s) => s?.replace(/\d.*$/, '').replace(/W$/, '').toUpperCase();
+            return getBase(t.symbol) === searchUpper;
         }
         return true;
     });
@@ -199,7 +200,19 @@ export default function TradeTable({ filters = {} }) {
                                     <td className="px-4 py-3 text-right">{trade.quantity}</td>
                                     <td className="px-4 py-3 text-right">{formatCurrency(trade.price)}</td>
                                     <td className="px-4 py-3 text-right font-medium">{formatCurrency(trade.total)}</td>
-                                    <td className="px-4 py-3 capitalize">{trade.broker}</td>
+                                    <td className="px-4 py-3 capitalize flex items-center gap-1">
+                                        {trade.broker}
+                                        {trade.import_filename && (
+                                            <span className="relative group">
+                                                <svg className="h-4 w-4 text-gray-400 hover:text-blue-500 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                </svg>
+                                                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none z-10">
+                                                    {trade.import_filename}
+                                                </span>
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="px-4 py-3 text-center">
                                         <button
                                             onClick={() => reviewM.mutate(trade.id)}
