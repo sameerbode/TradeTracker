@@ -7,6 +7,43 @@ A personal trade tracking application that aggregates trades from multiple broke
 
 ## Changelog
 
+### 2026-02-09 14:00 - Import History with Delete
+
+Added the ability to view import history and delete entire imports (along with their trades). This helps users undo overlapping CSV imports where deduplication may not catch everything due to `broker_trade_id` including `rowIndex`.
+
+**Changes:**
+- **Backend**: Added `deleteImport()` service function that deletes strategy_trades references, trades, and the import record in a transaction. Added `DELETE /api/import/:id` route.
+- **Frontend**: Added `deleteImport()` API client function. Added import history panel to `ImportButton` component with a clock icon toggle, showing each import's filename, broker, trade count, date, and a delete button with confirmation.
+
+### 2026-02-08 - Import Source Info Icon on Trades
+
+Added an info icon next to the broker name in the All Trades view that shows which file the trade was imported from on hover.
+
+**Backend Changes:**
+- `database.js`: Migration to add `import_id` column to trades table
+- `tradeService.js`: Updated `insertTrades()` to accept and store `import_id`; updated `getAllTrades()` to JOIN imports table and return `import_filename`
+- `importService.js`: `logImport()` now returns the import ID; added `updateImportCounts()` to update counts after insert; import record created before trades so `import_id` is available
+
+**Frontend Changes:**
+- `TradeTable.jsx`: Info icon (circle-i) next to broker name with tooltip showing the import filename on hover
+
+**Note:** Existing trades won't have an `import_filename` (no icon shown). Only newly imported trades will track their source file.
+
+---
+
+### 2026-02-08 - Fix Webull Options Total Calculation
+
+Fixed Webull CSV parser not applying the 100x contract multiplier for options.
+
+**Problem:** When the `Total` column was missing from Webull CSV, the fallback calculated `quantity * price` instead of `quantity * price * 100` for options. This meant a 1-contract option at $1.00 showed $1 total instead of $100.
+
+**Fix (webullCsv.js):**
+- Moved total calculation after asset type detection so the multiplier can be applied
+- Options now correctly use `quantity * price * 100` as fallback
+- Stocks and futures still use `quantity * price`
+
+---
+
 ### 2026-02-03 - Technical Documentation
 
 Created `TECH.md` with comprehensive technical documentation including:

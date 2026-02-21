@@ -35,6 +35,12 @@ export function getDb() {
         if (!hasExpiredWorthless) {
             db.exec('ALTER TABLE trades ADD COLUMN expired_worthless INTEGER DEFAULT 0');
         }
+
+        // Migration: add import_id column if it doesn't exist
+        const hasImportId = columns.some(col => col.name === 'import_id');
+        if (!hasImportId) {
+            db.exec('ALTER TABLE trades ADD COLUMN import_id INTEGER REFERENCES imports(id)');
+        }
     }
     return db;
 }

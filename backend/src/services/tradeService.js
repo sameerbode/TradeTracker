@@ -80,9 +80,10 @@ function getReviewStatus(trades) {
 export function getAllTrades(filters = {}) {
     const db = getDb();
     let query = `
-        SELECT t.*, a.broker, a.nickname as account_name
+        SELECT t.*, a.broker, a.nickname as account_name, i.filename as import_filename
         FROM trades t
         JOIN accounts a ON t.account_id = a.id
+        LEFT JOIN imports i ON t.import_id = i.id
         WHERE 1=1
     `;
     const params = [];
@@ -177,12 +178,12 @@ export function expireTrades(ids) {
     return db.prepare(`UPDATE trades SET expired_worthless = 1 WHERE id IN (${placeholders})`).run(...ids);
 }
 
-export function insertTrades(accountId, trades) {
+export function insertTrades(accountId, trades, importId = null) {
     const db = getDb();
     const insert = db.prepare(`
         INSERT OR IGNORE INTO trades
-        (account_id, broker_trade_id, symbol, asset_type, side, quantity, price, total, fees, executed_at, expiration_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (account_id, broker_trade_id, symbol, asset_type, side, quantity, price, total, fees, executed_at, expiration_date, import_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let imported = 0;
@@ -201,7 +202,8 @@ export function insertTrades(accountId, trades) {
                 trade.total,
                 trade.fees,
                 trade.executed_at,
-                trade.expiration_date || null
+                trade.expiration_date || null,
+                importId
             );
             if (result.changes > 0) {
                 imported++;

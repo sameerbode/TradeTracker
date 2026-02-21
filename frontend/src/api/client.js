@@ -107,6 +107,8 @@ export const importPdf = async (file) => {
 
 export const getImportHistory = (limit = 20) => request(`/import/history?limit=${limit}`);
 
+export const deleteImport = (id) => request(`/import/${id}`, { method: 'DELETE' });
+
 // Export backup - triggers download
 export const exportBackup = async () => {
     const response = await fetch(`${API_BASE}/import/export`);

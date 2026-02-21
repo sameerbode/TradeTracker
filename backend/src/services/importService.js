@@ -36,11 +36,14 @@ export async function importCsv(filename, content) {
     // Get or create account
     const account = getOrCreateAccount(broker);
 
-    // Insert trades
-    const { imported, skipped } = insertTrades(account.id, trades);
+    // Create import record first to get import_id
+    const importId = logImport(account.id, filename, 'csv', 0, 0);
 
-    // Log import
-    logImport(account.id, filename, 'csv', imported, skipped);
+    // Insert trades with import_id
+    const { imported, skipped } = insertTrades(account.id, trades, importId);
+
+    // Update import record with actual counts
+    updateImportCounts(importId, imported, skipped);
 
     return {
         broker,
@@ -66,11 +69,14 @@ export async function importPdf(filename, buffer) {
     // Get or create robinhood account
     const account = getOrCreateAccount('robinhood');
 
-    // Insert trades
-    const { imported, skipped } = insertTrades(account.id, trades);
+    // Create import record first to get import_id
+    const importId = logImport(account.id, filename, 'pdf', 0, 0);
 
-    // Log import
-    logImport(account.id, filename, 'pdf', imported, skipped);
+    // Insert trades with import_id
+    const { imported, skipped } = insertTrades(account.id, trades, importId);
+
+    // Update import record with actual counts
+    updateImportCounts(importId, imported, skipped);
 
     return {
         broker: 'robinhood',
@@ -92,12 +98,43 @@ export function getImportHistory(limit = 20) {
     `).all(limit);
 }
 
+export function deleteImport(importId) {
+    const db = getDb();
+    const transaction = db.transaction(() => {
+        // Get trade IDs for this import
+        const tradeIds = db.prepare('SELECT id FROM trades WHERE import_id = ?').all(importId).map(r => r.id);
+
+        // Clean up strategy_trades references
+        if (tradeIds.length > 0) {
+            const placeholders = tradeIds.map(() => '?').join(',');
+            db.prepare(`DELETE FROM strategy_trades WHERE trade_id IN (${placeholders})`).run(...tradeIds);
+        }
+
+        // Delete trades
+        const tradesDeleted = db.prepare('DELETE FROM trades WHERE import_id = ?').run(importId).changes;
+
+        // Delete the import record
+        db.prepare('DELETE FROM imports WHERE id = ?').run(importId);
+
+        return { trades_deleted: tradesDeleted };
+    });
+    return transaction();
+}
+
 function logImport(accountId, filename, fileType, imported, skipped) {
     const db = getDb();
-    db.prepare(`
+    const result = db.prepare(`
         INSERT INTO imports (account_id, filename, file_type, trades_imported, trades_skipped)
         VALUES (?, ?, ?, ?, ?)
     `).run(accountId, filename, fileType, imported, skipped);
+    return result.lastInsertRowid;
+}
+
+function updateImportCounts(importId, imported, skipped) {
+    const db = getDb();
+    db.prepare(`
+        UPDATE imports SET trades_imported = ?, trades_skipped = ? WHERE id = ?
+    `).run(imported, skipped, importId);
 }
 
 // Export all data as JSON for backup

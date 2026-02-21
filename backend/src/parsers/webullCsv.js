@@ -60,13 +60,13 @@ export function parseWebullCsv(csvContent) {
                 .replace('$', '')
                 .replace(',', '')
         ) || 0;
-        const total = parseFloat(
+        const rawTotal = parseFloat(
             (row['Total'] || '')
                 .replace('$', '')
                 .replace(',', '')
                 .replace('(', '-')
                 .replace(')', '')
-        ) || (quantity * price);
+        ) || 0;
         const executedAt = row['Filled Time'] || row['Time'] || row['Create Time'] || row['Placed Time'];
 
         if (quantity === 0) {
@@ -123,6 +123,11 @@ export function parseWebullCsv(csvContent) {
                 }
             }
         }
+
+        // Calculate total: use CSV value if present, otherwise compute it
+        // Options contracts represent 100 shares, so multiply by 100
+        const multiplier = assetType === 'option' ? 100 : 1;
+        const total = rawTotal || (quantity * price * multiplier);
 
         trades.push({
             broker_trade_id: `wb_${executedAt}_${symbol}_${side}_${quantity}_${price}_${rowIndex}`,

@@ -58,6 +58,16 @@ router.get('/history', (req, res) => {
     }
 });
 
+// DELETE /api/import/:id - Delete an import and its trades
+router.delete('/:id', (req, res) => {
+    try {
+        const result = importService.deleteImport(req.params.id);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // GET /api/import/export - Export all data as JSON backup
 router.get('/export', (req, res) => {
     try {
