@@ -170,10 +170,11 @@ export function calculatePositionMetrics(trades) {
  * Returns array of { tradeIds, status } objects.
  */
 export function computeRoundTrips(trades) {
-    // Group trades by symbol AND asset_type
+    // Group trades by symbol AND asset_type AND account_id (broker)
+    // This ensures trades from different brokers don't get mixed
     const tradesByKey = {};
     for (const trade of trades) {
-        const key = `${trade.symbol}_${trade.asset_type}`;
+        const key = `${trade.symbol}_${trade.asset_type}_${trade.account_id}`;
         if (!tradesByKey[key]) {
             tradesByKey[key] = [];
         }
@@ -597,17 +598,21 @@ export function recomputePositionsAfterImport(importedTradeIds) {
 
     if (!importedTradeIds || importedTradeIds.length === 0) return { recomputed: 0 };
 
-    // Get symbols of imported trades
+    // Get symbols of imported trades WITH broker info (via account_id)
     const placeholders = importedTradeIds.map(() => '?').join(',');
     const importedSymbols = db.prepare(`
-        SELECT DISTINCT symbol, asset_type FROM trades WHERE id IN (${placeholders})
+        SELECT DISTINCT t.symbol, t.asset_type, t.account_id, a.broker 
+        FROM trades t
+        JOIN accounts a ON t.account_id = a.id
+        WHERE t.id IN (${placeholders})
     `).all(...importedTradeIds);
 
     if (importedSymbols.length === 0) return { recomputed: 0 };
 
     // Find all simple (unnamed) positions that share symbols with imported trades
     // Leave user-named (multi-leg) positions alone
-    const symbolKeys = importedSymbols.map(s => `${s.symbol}_${s.asset_type}`);
+    // KEY: Include broker/account_id to keep different brokers separate
+    const symbolKeys = importedSymbols.map(s => `${s.symbol}_${s.asset_type}_${s.account_id}`);
 
     // Get all simple position IDs that contain trades with affected symbols
     const allSimplePositions = db.prepare(`
@@ -621,12 +626,12 @@ export function recomputePositionsAfterImport(importedTradeIds) {
     const positionsToRecompute = [];
     for (const { position_id } of allSimplePositions) {
         const posTrades = db.prepare(`
-            SELECT t.symbol, t.asset_type FROM trades t
+            SELECT t.symbol, t.asset_type, t.account_id FROM trades t
             JOIN position_trades pt ON t.id = pt.trade_id
             WHERE pt.position_id = ?
         `).all(position_id);
 
-        const posKeys = posTrades.map(t => `${t.symbol}_${t.asset_type}`);
+        const posKeys = posTrades.map(t => `${t.symbol}_${t.asset_type}_${t.account_id}`);
         if (posKeys.some(k => symbolKeys.includes(k))) {
             positionsToRecompute.push(position_id);
         }
@@ -690,8 +695,9 @@ export function recomputePositionsAfterImport(importedTradeIds) {
     db.prepare(`DELETE FROM positions WHERE id IN (${recomputePlaceholders})`).run(...positionsToRecompute);
 
     // Get all trades for recomputation (including new ones)
-    const allSymbolConditions = importedSymbols.map(() => '(t.symbol = ? AND t.asset_type = ?)').join(' OR ');
-    const symParams = importedSymbols.flatMap(s => [s.symbol, s.asset_type]);
+    // IMPORTANT: Group by account_id (broker) to keep different brokers separate
+    const allSymbolConditions = importedSymbols.map(() => '(t.symbol = ? AND t.asset_type = ? AND t.account_id = ?)').join(' OR ');
+    const symParams = importedSymbols.flatMap(s => [s.symbol, s.asset_type, s.account_id]);
 
     const tradesForRecompute = db.prepare(`
         SELECT t.* FROM trades t

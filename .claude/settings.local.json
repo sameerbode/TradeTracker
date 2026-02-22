@@ -28,7 +28,11 @@
       "Bash(timeout 5 node:*)",
       "Bash(taskkill:*)",
       "Bash(netstat:*)",
-      "Bash(wmic process where \"ProcessId=2324\" get Name,CommandLine)"
+      "Bash(wmic process where \"ProcessId=2324\" get Name,CommandLine)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(npx vite build:*)",
+      "Bash(kill:*)"
     ]
   }
 }

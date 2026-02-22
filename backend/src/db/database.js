@@ -33,10 +33,11 @@ export function withTransaction(db, fn) {
  * Returns array of { tradeIds, status } objects.
  */
 function computeRoundTripsFromTrades(trades) {
-    // Group trades by symbol AND asset_type
+    // Group trades by symbol AND asset_type AND account_id (broker)
+    // This ensures trades from different brokers don't get mixed
     const tradesByKey = {};
     for (const trade of trades) {
-        const key = `${trade.symbol}_${trade.asset_type}`;
+        const key = `${trade.symbol}_${trade.asset_type}_${trade.account_id}`;
         if (!tradesByKey[key]) {
             tradesByKey[key] = [];
         }
