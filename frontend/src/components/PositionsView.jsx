@@ -1,9 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, Fragment, useMemo, useEffect } from 'react';
+import ActionToolbar from './ActionToolbar';
 import {
     getPositions,
     setTradesReview,
     expireTrades,
+    applyStockSplit,
     createPosition,
     addTradesToPosition,
     deletePosition,
@@ -56,6 +58,12 @@ export default function PositionsView({ filters = {} }) {
     const [nextBasketId, setNextBasketId] = useState(2);
     const [editingPositionId, setEditingPositionId] = useState(null);
     const [editingName, setEditingName] = useState('');
+    const [openGearRow, setOpenGearRow] = useState(null);
+    const [notesModal, setNotesModal] = useState(null);
+    const [notesText, setNotesText] = useState('');
+
+    const [splitModal, setSplitModal] = useState(null); // { tradeId, symbol, quantity }
+    const [splitRatio, setSplitRatio] = useState('');
 
     const [tallyOpen, setTallyOpen] = useState(false);
 
@@ -65,6 +73,23 @@ export default function PositionsView({ filters = {} }) {
         document.addEventListener('click', handleClick);
         return () => document.removeEventListener('click', handleClick);
     }, [tallyOpen]);
+
+    const handleToolbarAction = (actionId, position) => {
+        switch (actionId) {
+            case 'note':
+                setNotesText(position.notes || '');
+                setNotesModal(position);
+                break;
+            case 'expired':
+                expireMutation.mutate(position.tradeIds);
+                break;
+            case 'ungroup':
+                if (confirm('Ungroup this position?')) {
+                    ungroupPositionMutation.mutate(position.id);
+                }
+                break;
+        }
+    };
 
     // Single query for ALL positions (both simple and multi-leg)
     const { data: positions = [], isLoading } = useQuery({
@@ -104,6 +129,15 @@ export default function PositionsView({ filters = {} }) {
         onSuccess: invalidatePositions,
     });
 
+    const splitMutation = useMutation({
+        mutationFn: ({ tradeIds, ratio }) => applyStockSplit(tradeIds, ratio),
+        onSuccess: () => {
+            invalidatePositions();
+            setSplitModal(null);
+            setSplitRatio('');
+        },
+    });
+
     const createPositionMutation = useMutation({
         mutationFn: ({ name, tradeIds }) => createPosition(name, tradeIds),
         onSuccess: invalidatePositions,
@@ -125,7 +159,7 @@ export default function PositionsView({ filters = {} }) {
     });
 
     const updatePositionMutation = useMutation({
-        mutationFn: ({ id, name, why }) => updatePosition(id, { name, why }),
+        mutationFn: ({ id, ...data }) => updatePosition(id, data),
         onSuccess: () => {
             invalidatePositions();
             setEditingPositionId(null);
@@ -517,14 +551,12 @@ export default function PositionsView({ filters = {} }) {
                             {isMultiLeg && (
                                 <span className="w-2 h-2 bg-purple-500 rounded-full flex-shrink-0" title="Multi-leg position"></span>
                             )}
-                            <svg
-                                className={`h-3 w-3 transition-transform text-gray-400 flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
+                            <ActionToolbar
+                                position={item}
+                                onAction={handleToolbarAction}
+                                isOpen={openGearRow === key}
+                                onToggle={() => setOpenGearRow(openGearRow === key ? null : key)}
+                            />
                             {isMultiLeg ? (
                                 editingPositionId === item.id ? (
                                     <input
@@ -568,6 +600,17 @@ export default function PositionsView({ filters = {} }) {
                                 <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded" title="Some legs expired">
                                     {item.expiredLegs?.length} expired
                                 </span>
+                            )}
+                            {item.notes && (
+                                <span
+                                    className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-purple-400 cursor-pointer hover:bg-purple-600 transition-colors"
+                                    title={item.notes}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setNotesText(item.notes);
+                                        setNotesModal(item);
+                                    }}
+                                />
                             )}
                         </span>
                     </td>
@@ -707,20 +750,6 @@ export default function PositionsView({ filters = {} }) {
                                     Reviewed
                                 </button>
                             )}
-                            {isMultiLeg && (
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (confirm('Ungroup this position?')) {
-                                            ungroupPositionMutation.mutate(item.id);
-                                        }
-                                    }}
-                                    className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600"
-                                    title="Ungroup"
-                                >
-                                    Ungroup
-                                </button>
-                            )}
                         </div>
                     </td>
                 </tr>
@@ -740,7 +769,8 @@ export default function PositionsView({ filters = {} }) {
                                         <th className="text-right py-1 pr-4">Price</th>
                                         <th className="text-right py-1 pr-4">Total</th>
                                         <th className="text-left py-1 pr-4">Date</th>
-                                        <th className="text-left py-1">Broker</th>
+                                        <th className="text-left py-1 pr-4">Broker</th>
+                                        <th className="text-center py-1 w-8"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -809,7 +839,24 @@ export default function PositionsView({ filters = {} }) {
                                                         minute: '2-digit',
                                                     })}
                                                 </td>
-                                                <td className="py-1 capitalize">{trade.broker}</td>
+                                                <td className="py-1 pr-4 capitalize">{trade.broker}</td>
+                                                <td className="py-1 text-center">
+                                                    {trade.asset_type === 'stock' && (
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSplitModal({ tradeId: trade.id, symbol: trade.symbol, quantity: trade.quantity });
+                                                                setSplitRatio('');
+                                                            }}
+                                                            className="p-0.5 rounded text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+                                                            title="Apply stock split"
+                                                        >
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                                                            </svg>
+                                                        </button>
+                                                    )}
+                                                </td>
                                             </tr>
                                         );
                                     })}
@@ -1266,6 +1313,153 @@ export default function PositionsView({ filters = {} }) {
                     </table>
                 </div>
             )}
+            {/* Notes Modal */}
+            {notesModal && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center"
+                    onClick={() => setNotesModal(null)}
+                >
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+                    <div
+                        className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
+                            <h3 className="text-lg font-semibold text-white">Position Notes</h3>
+                            <p className="text-purple-200 text-sm mt-0.5">
+                                {notesModal.isMultiLeg ? notesModal.name : (notesModal.displaySymbol || notesModal.symbol)}
+                            </p>
+                        </div>
+                        <div className="px-6 py-5">
+                            <textarea
+                                value={notesText}
+                                onChange={(e) => setNotesText(e.target.value)}
+                                placeholder="Add notes about this position..."
+                                rows={4}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all resize-none"
+                                autoFocus
+                            />
+                        </div>
+                        <div className="px-6 py-4 bg-gray-50 flex items-center justify-end gap-2 border-t">
+                            <button
+                                onClick={() => setNotesModal(null)}
+                                className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    updatePositionMutation.mutate({ id: notesModal.id, notes: notesText.trim() || null });
+                                    setNotesModal(null);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Split Modal */}
+            {splitModal && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center"
+                    onClick={() => { setSplitModal(null); setSplitRatio(''); }}
+                >
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+                    <div
+                        className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
+                            <h3 className="text-lg font-semibold text-white">Stock Split</h3>
+                            <p className="text-purple-200 text-sm mt-0.5">
+                                {splitModal.symbol} (current qty: {splitModal.quantity})
+                            </p>
+                        </div>
+                        <div className="px-6 py-5 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">Forward Split</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {[2, 3, 4, 5, 10, 20].map((r) => (
+                                        <button
+                                            key={r}
+                                            onClick={() => setSplitRatio(String(r))}
+                                            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                                                splitRatio === String(r)
+                                                    ? 'bg-purple-600 text-white border-purple-600'
+                                                    : 'bg-white text-gray-700 border-gray-300 hover:border-purple-400'
+                                            }`}
+                                        >
+                                            {r}:1
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">Reverse Split</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {[2, 3, 4, 5, 10].map((r) => (
+                                        <button
+                                            key={`r-${r}`}
+                                            onClick={() => setSplitRatio(String(1 / r))}
+                                            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                                                splitRatio === String(1 / r)
+                                                    ? 'bg-purple-600 text-white border-purple-600'
+                                                    : 'bg-white text-gray-700 border-gray-300 hover:border-purple-400'
+                                            }`}
+                                        >
+                                            1:{r}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Custom Ratio</label>
+                                <input
+                                    type="number"
+                                    step="any"
+                                    min="0"
+                                    value={splitRatio}
+                                    onChange={(e) => setSplitRatio(e.target.value)}
+                                    placeholder="e.g. 4 for 4:1, 0.25 for 1:4"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
+                                />
+                            </div>
+                            {splitRatio && Number(splitRatio) > 0 && (
+                                <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3">
+                                    <span className="font-medium">Preview:</span>{' '}
+                                    {splitModal.quantity} shares @ current price{' '}
+                                    &rarr; {Math.round(splitModal.quantity * Number(splitRatio) * 1e8) / 1e8} shares.
+                                    Total (cash) stays the same.
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-6 py-4 bg-gray-50 flex items-center justify-end gap-2 border-t">
+                            <button
+                                onClick={() => { setSplitModal(null); setSplitRatio(''); }}
+                                className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const ratio = Number(splitRatio);
+                                    if (ratio > 0) {
+                                        splitMutation.mutate({ tradeIds: [splitModal.tradeId], ratio });
+                                    }
+                                }}
+                                disabled={!splitRatio || Number(splitRatio) <= 0 || splitMutation.isPending}
+                                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                                {splitMutation.isPending ? 'Applying...' : 'Apply Split'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Why Option Modal */}
             {whyModal && (
                 <div

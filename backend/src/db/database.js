@@ -176,8 +176,78 @@ export function getDb() {
                 computeInitialPositions(db);
             }
         }
+        // Migration: fix cross-broker position grouping
+        // Old code grouped positions by symbol only, mixing trades from different brokers.
+        // Detect simple (unnamed) positions with trades from multiple accounts and recompute them.
+        fixCrossBrokerPositions(db);
     }
     return db;
+}
+
+function fixCrossBrokerPositions(db) {
+    const crossBrokerPositions = db.prepare(`
+        SELECT p.id FROM positions p
+        WHERE p.name IS NULL
+        AND (SELECT COUNT(DISTINCT t.account_id)
+             FROM position_trades pt
+             JOIN trades t ON pt.trade_id = t.id
+             WHERE pt.position_id = p.id) > 1
+    `).all();
+
+    if (crossBrokerPositions.length === 0) return;
+
+    console.log(`[Migration] Fixing ${crossBrokerPositions.length} cross-broker positions...`);
+
+    db.exec('BEGIN');
+    try {
+        const posIds = crossBrokerPositions.map(r => r.id);
+        const ph = posIds.map(() => '?').join(',');
+
+        // Collect trade IDs from affected positions
+        const affectedTradeIds = db.prepare(`
+            SELECT DISTINCT trade_id FROM position_trades
+            WHERE position_id IN (${ph})
+        `).all(...posIds).map(r => r.trade_id);
+
+        // Delete the cross-broker positions
+        db.prepare(`DELETE FROM positions WHERE id IN (${ph})`).run(...posIds);
+
+        // Get full trade data for recomputation
+        if (affectedTradeIds.length > 0) {
+            const tph = affectedTradeIds.map(() => '?').join(',');
+            const trades = db.prepare(`
+                SELECT t.* FROM trades t
+                WHERE t.id IN (${tph})
+                ORDER BY t.executed_at ASC, CASE WHEN t.side = 'buy' THEN 0 ELSE 1 END ASC
+            `).all(...affectedTradeIds);
+
+            const roundTrips = computeRoundTripsFromTrades(trades);
+            const insertPosition = db.prepare(`
+                INSERT INTO positions (name, status, created_at)
+                VALUES (?, ?, datetime('now'))
+            `);
+            const insertPT = db.prepare(`
+                INSERT OR IGNORE INTO position_trades (position_id, trade_id)
+                VALUES (?, ?)
+            `);
+
+            for (const rt of roundTrips) {
+                const result = insertPosition.run(null, rt.status);
+                const posId = result.lastInsertRowid;
+                for (const tradeId of rt.tradeIds) {
+                    insertPT.run(posId, tradeId);
+                }
+            }
+
+            console.log(`[Migration] Recomputed ${roundTrips.length} positions from ${affectedTradeIds.length} trades`);
+        }
+
+        db.exec('COMMIT');
+    } catch (e) {
+        db.exec('ROLLBACK');
+        console.error('[Migration] Failed to fix cross-broker positions:', e.message);
+        throw e;
+    }
 }
 
 function migrateStrategiesToPositions(db) {

@@ -7,6 +7,58 @@ A personal trade tracking application that aggregates trades from multiple broke
 
 ## Changelog
 
+### 2026-02-23 16:00 - Fix Cross-Broker Position Grouping (Retroactive)
+
+Commit 2372f69 fixed new position creation to group by broker, but existing positions in the DB that were created before the fix still contained cross-broker trades. Added a startup migration that detects and fixes these.
+
+**Root cause:** Positions created before the broker-grouping fix had trades from multiple `account_id`s merged into single positions (e.g., AAPL trades from both Robinhood and Webull in one position).
+
+**Fix:** Added `fixCrossBrokerPositions()` migration in `database.js` that runs on startup:
+1. Finds simple (unnamed) positions where `COUNT(DISTINCT account_id) > 1`
+2. Deletes those positions
+3. Recomputes round trips using `computeRoundTripsFromTrades()` which groups by `symbol_assetType_accountId`
+4. Idempotent — becomes a no-op once all cross-broker positions are fixed
+
+**Result:** 35 cross-broker positions were split into 73 correctly-separated positions.
+
+**Changes:**
+- `backend/src/db/database.js`: Added `fixCrossBrokerPositions()` migration function, called during `getDb()` startup
+
+### 2026-02-23 15:00 - Stock Split Per-Trade Adjustment
+
+Added the ability to apply stock split adjustments to individual stock trades. When a stock splits, pre-split trades have incorrect quantity/price which prevents round-trip positions from closing. This feature adjusts quantity and price while keeping the total (cash) unchanged, then recomputes positions.
+
+**Features:**
+- Split icon on each stock trade row in the expanded position view
+- Modal with quick-pick buttons for common forward splits (2:1 through 20:1) and reverse splits (1:2 through 1:10)
+- Custom ratio input for non-standard splits
+- Preview showing the resulting quantity before applying
+- Automatic position recomputation after split is applied
+
+**Changes:**
+- `backend/src/services/tradeService.js`: Added `applyStockSplit(tradeIds, ratio)` - multiplies quantity by ratio, divides price by ratio, total unchanged
+- `backend/src/routes/trades.js`: Added `POST /api/trades/split` endpoint with validation, calls `recomputePositionsAfterImport` to re-form positions
+- `frontend/src/api/client.js`: Added `applyStockSplit()` API function
+- `frontend/src/components/ActionToolbar.jsx`: Removed position-level split action (moved to per-trade)
+- `frontend/src/components/PositionsView.jsx`: Added split icon to stock trade rows, split modal with forward/reverse presets + custom input, splitMutation
+
+### 2026-02-23 - Integrate ActionToolbar as Gear Icon in Position Rows
+
+Replaced the expand chevron with a gear icon at the start of each position row. Clicking the gear reveals contextual action icons inline (Note, Stock Split, Mark Expired, Ungroup). Rows still expand/collapse on click.
+
+**Features:**
+- Gear icon at the start of each row (replaces chevron); click to toggle action icons
+- Actions shown based on position type: Note (always), Stock Split (stocks), Mark Expired (options), Ungroup (multi-leg)
+- Modern SVG icons (Heroicons-style), gear highlights purple when open
+- Notes modal: edit/save per-position notes via textarea modal (consistent with Why modal style)
+- Small purple dot indicator on rows that have notes (click to view/edit)
+- Stock Split action shows "coming soon" placeholder (no backend yet)
+
+**Changes:**
+- `ActionToolbar.jsx`: Gear icon toggle + contextual action icons, clean SVG icons, no floating/hover needed
+- `PositionsView.jsx`: Replaced chevron with ActionToolbar gear, added `openGearRow` state, notes modal, purple dot notes indicator
+- `PositionsView.jsx`: Updated `updatePositionMutation` to accept arbitrary fields (supports `notes`)
+
 ### 2026-02-21 - Unified Positions Table Refactor
 
 Replaced the dual-system (on-the-fly round trips + strategies table) with a single `positions` table. All positions are now first-class DB records, enabling "why" assignment to any position.

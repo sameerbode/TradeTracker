@@ -99,6 +99,16 @@ export function expireTrades(ids) {
     return db.prepare(`UPDATE trades SET expired_worthless = 1 WHERE id IN (${placeholders})`).run(...ids);
 }
 
+export function applyStockSplit(tradeIds, ratio) {
+    const db = getDb();
+    const placeholders = tradeIds.map(() => '?').join(',');
+    return db.prepare(`
+        UPDATE trades
+        SET quantity = quantity * ?, price = price / ?
+        WHERE id IN (${placeholders}) AND asset_type = 'stock'
+    `).run(ratio, ratio, ...tradeIds);
+}
+
 export function insertTrades(accountId, trades, importId = null) {
     const db = getDb();
     const insert = db.prepare(`

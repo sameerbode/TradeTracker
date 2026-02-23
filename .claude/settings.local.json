@@ -32,7 +32,8 @@
       "Bash(python3:*)",
       "Bash(node:*)",
       "Bash(npx vite build:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "Bash(ps:*)"
     ]
   }
 }
