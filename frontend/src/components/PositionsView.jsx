@@ -451,6 +451,13 @@ export default function PositionsView({ filters = {} }) {
         let aVal = a[sortConfig.key];
         let bVal = b[sortConfig.key];
 
+        // For symbol sort, use the displayed value so multi-leg positions (which have no
+        // displaySymbol) sort by their name instead of producing NaN comparisons.
+        if (sortConfig.key === 'displaySymbol') {
+            aVal = a.isMultiLeg ? (a.name || '') : (a.displaySymbol || '');
+            bVal = b.isMultiLeg ? (b.name || '') : (b.displaySymbol || '');
+        }
+
         if (aVal === null || aVal === undefined) aVal = sortConfig.direction === 'asc' ? Infinity : -Infinity;
         if (bVal === null || bVal === undefined) bVal = sortConfig.direction === 'asc' ? Infinity : -Infinity;
 
