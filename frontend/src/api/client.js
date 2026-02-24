@@ -50,6 +50,12 @@ export const expireTrades = (tradeIds) =>
         body: JSON.stringify({ tradeIds })
     });
 
+export const applyStockSplit = (tradeIds, ratio) =>
+    request('/trades/split', {
+        method: 'POST',
+        body: JSON.stringify({ tradeIds, ratio }),
+    });
+
 // Stats
 export const getStats = () => request('/stats');
 

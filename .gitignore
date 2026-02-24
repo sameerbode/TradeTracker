@@ -29,3 +29,5 @@ npm-debug.log*
 # Temporary files
 *.tmp
 *.temp
+backend/data/*.db-shm
+backend/data/*.db-wal

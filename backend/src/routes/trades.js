@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as tradeService from '../services/tradeService.js';
+import { recomputePositionsAfterImport } from '../services/positionService.js';
 
 const router = Router();
 
@@ -109,6 +110,24 @@ router.post('/expire', (req, res) => {
             return res.status(400).json({ error: 'tradeIds array is required' });
         }
         const result = tradeService.expireTrades(tradeIds);
+        res.json({ success: true, updated: result.changes });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/trades/split - Apply stock split adjustment to trades
+router.post('/split', (req, res) => {
+    try {
+        const { tradeIds, ratio } = req.body;
+        if (!Array.isArray(tradeIds) || tradeIds.length === 0) {
+            return res.status(400).json({ error: 'tradeIds array is required' });
+        }
+        if (typeof ratio !== 'number' || ratio <= 0) {
+            return res.status(400).json({ error: 'ratio must be a positive number' });
+        }
+        const result = tradeService.applyStockSplit(tradeIds, ratio);
+        recomputePositionsAfterImport(tradeIds);
         res.json({ success: true, updated: result.changes });
     } catch (error) {
         res.status(500).json({ error: error.message });
