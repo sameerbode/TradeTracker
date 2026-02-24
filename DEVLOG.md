@@ -7,6 +7,16 @@ A personal trade tracking application that aggregates trades from multiple broke
 
 ## Changelog
 
+### 2026-02-23 - Fix Symbol Sort Mismatch for Multi-Leg Positions
+
+Multi-leg positions have no `displaySymbol` (undefined), which got converted to `Infinity` in the sort comparator. Comparing a string vs `Infinity` falls through to `aVal - bVal`, returning `NaN`. JavaScript sort treats `NaN` as 0 (equal), so multi-leg items kept their backend `created_at DESC` order rather than sorting alphabetically — causing them to appear in the wrong position. Only visible in prod because local data coincidentally hid it.
+
+Fixed by using the displayed value in the sort: `name` for multi-leg positions, `displaySymbol` for simple ones.
+
+**Files changed:** `frontend/src/components/PositionsView.jsx`
+
+---
+
 ### 2026-02-23 16:00 - Fix Cross-Broker Position Grouping (Retroactive)
 
 Commit 2372f69 fixed new position creation to group by broker, but existing positions in the DB that were created before the fix still contained cross-broker trades. Added a startup migration that detects and fixes these.
